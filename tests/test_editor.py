@@ -163,6 +163,68 @@ def test_bold_run_adds_ink(simple_pdf):
     assert bold > plain * 1.1  # bold is meaningfully heavier
 
 
+def test_move_span_relocates_text(simple_pdf):
+    """Moving a span redraws it at origin+(dx,dy); the text survives at the new
+    location and nothing is dropped."""
+    from pdfcore.editor import move_span
+
+    with PdfDocument.open(simple_pdf) as doc:
+        block = _first_block_with(doc, "Invoice number 12345")
+        span = block.spans[0]
+        ox, oy = span.origin
+
+        result = move_span(doc.page(0), span, 40.0, 25.0)
+        assert result.ok
+
+        moved = None
+        for b in extract_blocks(doc.page(0)):
+            for s in b.spans:
+                if "12345" in s.text:
+                    moved = s
+        assert moved is not None, "moved text vanished"
+        assert abs(moved.origin[0] - (ox + 40.0)) < 3.0
+        assert abs(moved.origin[1] - (oy + 25.0)) < 3.0
+
+
+def test_move_off_page_flags_overflow(simple_pdf):
+    from pdfcore.editor import Fidelity as F
+    from pdfcore.editor import move_span
+
+    with PdfDocument.open(simple_pdf) as doc:
+        block = _first_block_with(doc, "Invoice number 12345")
+        # Shove it far past the right/bottom edge of the A4 page.
+        result = move_span(doc.page(0), block.spans[0], 5000.0, 5000.0)
+        assert result.ok
+        assert result.fidelity == F.OVERFLOW
+
+
+def test_unchanged_text_edit_leaves_neighbour_in_place():
+    """Re-applying a span's own text (delta ≈ 0) must not shift an adjacent
+    span on the same line — the 'text drifts after editing' regression."""
+    import fitz
+
+    from pdfcore.blocks import extract_blocks as extract
+    from pdfcore.editor import apply_span_edit
+
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=200)
+    page.insert_text((40, 80), "Alpha", fontname="helv", fontsize=12)
+    # Different colour → a distinct span on the SAME line, close enough to count
+    # as inline-following (not a separate column).
+    page.insert_text((80, 80), "Beta", fontname="helv", fontsize=12, color=(1, 0, 0))
+
+    spans = [s for b in extract(page) if b.editable for s in b.spans]
+    alpha = next(s for s in spans if "Alpha" in s.text)
+    beta_x_before = next(s for s in spans if "Beta" in s.text).origin[0]
+
+    apply_span_edit(page, alpha, alpha.text, spans)  # same text → delta ≈ 0
+
+    spans2 = [s for b in extract(page) if b.editable for s in b.spans]
+    beta_x_after = next(s for s in spans2 if "Beta" in s.text).origin[0]
+    assert abs(beta_x_after - beta_x_before) < 0.6
+    doc.close()
+
+
 def test_font_resolution_flags_substitution():
     # A subsetted embedded font name → substituted.
     assert resolve_font("ABCDEF+CustomFont").substituted is True

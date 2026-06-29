@@ -20,6 +20,11 @@ from pdfcore.blocks import Span, TextBlock
 
 class PageView(QWidget):
     span_clicked = Signal(object)  # emits a Span or None
+    # emits (Span, dx_points, dy_points) when the user moves the selected span
+    span_moved = Signal(object, float, float)
+
+    # Drag must exceed this many screen pixels to count as a move (vs. a click).
+    _DRAG_THRESHOLD = 3.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -30,8 +35,22 @@ class PageView(QWidget):
         self._scale: float = 1.0
         self._selected: Span | None = None
         self._selected_block: TextBlock | None = None
+        self._press_pos = None        # QPointF where a press began (screen px)
+        self._drag_offset = None      # QPointF live drag delta (screen px)
         self.setMinimumSize(400, 500)
         self.setMouseTracking(True)
+        # Accept keyboard focus so arrow keys can nudge the selected span.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    @property
+    def spans(self) -> list[Span]:
+        return self._spans
+
+    def select(self, span: Span | None) -> None:
+        """Programmatically select a span (e.g. to re-select after a move)."""
+        self._selected = span
+        self._selected_block = self._span_block.get(id(span)) if span else None
+        self.update()
 
     def set_page(self, rendered, blocks: list[TextBlock]) -> None:
         img = QImage(
@@ -48,6 +67,8 @@ class PageView(QWidget):
         self._scale = rendered.scale
         self._selected = None
         self._selected_block = None
+        self._press_pos = None
+        self._drag_offset = None
         self.setFixedSize(rendered.width, rendered.height)
         self.update()
 
@@ -87,6 +108,16 @@ class PageView(QWidget):
             else:
                 p.setPen(QPen(QColor(40, 120, 220, 90), 1, Qt.PenStyle.DashLine))
                 p.drawRect(rect)
+
+        # Drag preview: a "ghost" of the selected span at its prospective drop
+        # position, so the move is visible before it's committed.
+        if self._selected is not None and self._drag_offset is not None:
+            ghost = self._rect(self._selected.bbox).translated(
+                self._drag_offset.x(), self._drag_offset.y()
+            )
+            p.setPen(QPen(QColor(220, 90, 40), 2, Qt.PenStyle.SolidLine))
+            p.fillRect(ghost, QColor(220, 90, 40, 40))
+            p.drawRect(ghost)
         p.end()
 
     def _rect(self, bbox) -> QRectF:
@@ -111,5 +142,49 @@ class PageView(QWidget):
                     best_area, hit = area, span
         self._selected = hit
         self._selected_block = self._span_block.get(id(hit)) if hit else None
+        self._press_pos = pos if hit is not None else None
+        self._drag_offset = None
+        self.setFocus()  # so arrow keys nudge this selection
         self.update()
         self.span_clicked.emit(hit)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        # Track a drag only while the left button is held on a selected span.
+        if self._selected is None or self._press_pos is None:
+            return
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        offset = event.position() - self._press_pos
+        # Ignore sub-threshold jitter so a plain click doesn't register as a move.
+        if self._drag_offset is None and offset.manhattanLength() < self._DRAG_THRESHOLD:
+            return
+        self._drag_offset = offset
+        self.update()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        span = self._selected
+        offset = self._drag_offset
+        self._press_pos = None
+        self._drag_offset = None
+        if span is not None and offset is not None:
+            dx = offset.x() / self._scale
+            dy = offset.y() / self._scale
+            self.update()
+            self.span_moved.emit(span, dx, dy)
+        else:
+            self.update()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        """Arrow keys nudge the selected span (Shift = a larger 10pt step)."""
+        if self._selected is None:
+            return super().keyPressEvent(event)
+        step = 10.0 if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) else 1.0
+        delta = {
+            Qt.Key.Key_Left: (-step, 0.0),
+            Qt.Key.Key_Right: (step, 0.0),
+            Qt.Key.Key_Up: (0.0, -step),
+            Qt.Key.Key_Down: (0.0, step),
+        }.get(event.key())
+        if delta is None:
+            return super().keyPressEvent(event)
+        self.span_moved.emit(self._selected, delta[0], delta[1])

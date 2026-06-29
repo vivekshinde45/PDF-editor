@@ -12,6 +12,7 @@ import fitz
 from pdfcore.blocks import Span, TextBlock, extract_blocks
 from pdfcore.document import PdfDocument
 from pdfcore.editor import EditResult, Fidelity, apply_edit, apply_span_edit
+from pdfcore.editor import move_span as _move_span
 from pdfcore.surgical import surgical_replace
 
 
@@ -110,6 +111,18 @@ class Controller:
                 return EditResult(ok=True, fidelity=Fidelity.EXACT)
 
         result = apply_span_edit(self._doc.page(index), span, runs, block_spans)
+        if not result.ok:
+            self._undo.pop()
+        return result
+
+    def move_span(self, index: int, span: Span, dx: float, dy: float) -> EditResult:
+        """Move a span by (dx, dy) PDF points. Redacts the original and redraws
+        it at the new position (reusing the original font). Undoable."""
+        assert self._doc is not None
+        if dx == 0 and dy == 0:
+            return EditResult(ok=True, fidelity=Fidelity.EXACT)
+        self._snapshot()
+        result = _move_span(self._doc.page(index), span, dx, dy)
         if not result.ok:
             self._undo.pop()
         return result

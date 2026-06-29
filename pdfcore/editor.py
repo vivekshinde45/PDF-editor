@@ -159,9 +159,18 @@ def apply_span_edit(
 
     buffer, fontname, measure_font, substituted = _choose_font(page, span.font_name, text)
     new_width = _measure_width(measure_font, runs, size)
-    delta = new_width - (span.bbox[2] - span.bbox[0])
+    # The shift applied to following spans must reflect only the CHANGE in width,
+    # so measure the old text with the SAME font we measure the new text with.
+    # (Comparing against the original rendered bbox width would fold the embedded
+    # vs. reused-font metric mismatch into ``delta`` and make neighbours drift
+    # even when the text length is unchanged — the "off beat" bug.)
+    old_width = _measure_width(measure_font, [(span.text, span.bold, span.italic)], size)
+    delta = new_width - old_width
 
-    following = _inline_following(span, block_spans or [], size)
+    # Only disturb the following spans when the width actually changed enough to
+    # see (~half a point). For same-length edits, delta ≈ 0, so we leave the rest
+    # of the line completely untouched and nothing shifts.
+    following = _inline_following(span, block_spans or [], size) if abs(delta) > 0.5 else []
 
     # Redact the edited span and every span we're about to move, then redraw all.
     page.add_redact_annot(fitz.Rect(*span.bbox), fill=False, cross_out=False)
@@ -201,6 +210,49 @@ def apply_span_edit(
             message=(
                 f"Original font '{span.font_name}' is missing glyphs for the new "
                 f"text (or isn't reusable); a similar standard font was used."
+            ),
+        )
+    return EditResult(ok=True, fidelity=Fidelity.EXACT)
+
+
+def move_span(page: fitz.Page, span: Span, dx: float, dy: float) -> EditResult:
+    """Move ``span`` by ``(dx, dy)`` PDF points: redact it and redraw at the new
+    origin, reusing the original embedded font.
+
+    Positive ``dx`` moves right, positive ``dy`` moves down (PDF page space).
+    Only the location changes — the text, font, size, weight and colour are
+    preserved. Other content on the page is untouched.
+    """
+    runs = [(span.text, span.bold, span.italic)]
+    buffer, fontname, measure_font, substituted = _choose_font(page, span.font_name, span.text)
+
+    page.add_redact_annot(fitz.Rect(*span.bbox), fill=False, cross_out=False)
+    page.apply_redactions(images=0, graphics=0)
+    if buffer is not None:
+        page.insert_font(fontname=fontname, fontbuffer=buffer)
+
+    new_x = span.origin[0] + dx
+    new_y = span.origin[1] + dy
+    end = _draw_line(
+        page, new_x, new_y, runs, fontname, measure_font,
+        span.size, span.color, span.bold, span.italic,
+    )
+
+    # The baseline sits at new_y; the glyph tops reach ~one font size above it.
+    if (new_x < _PADDING or new_y - span.size < 0
+            or end > page.rect.x1 - _PADDING or new_y > page.rect.y1 - _PADDING):
+        return EditResult(
+            ok=True,
+            fidelity=Fidelity.OVERFLOW,
+            message="Moved text lands outside the page bounds.",
+        )
+    if substituted:
+        return EditResult(
+            ok=True,
+            fidelity=Fidelity.FONT_SUBSTITUTED,
+            message=(
+                f"Original font '{span.font_name}' wasn't reusable; a similar "
+                f"standard font was used. Glyph shapes may differ."
             ),
         )
     return EditResult(ok=True, fidelity=Fidelity.EXACT)

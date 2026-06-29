@@ -24,8 +24,11 @@ text-based (digitally generated) PDFs. See the design spec at
 - Bold/italic individual words: select text in the edit box and click **B** / **I**.
   Both are synthesized on the original font (bold = stroke, italic = shear), so
   the font family is preserved even with no embedded bold/italic variant.
+- **Move a selected span**: drag its box on the page, or nudge it with the
+  arrow keys (hold **Shift** for a 10 pt step). A ghost outline previews where
+  it will land; the text is re-rendered at the new position in its original font.
 - Save a copy (the original file is never overwritten).
-- Undo.
+- Undo (every edit and move is undoable).
 
 ## What it does NOT do (v1)
 
@@ -113,7 +116,13 @@ position, and the rest of its **line reflows**:
   overlap.
 - Shifting **stops at a column-sized gap**: content after a wide gap is treated
   as a separate column and stays put, so **table/column alignment is preserved.**
+- The shift is measured as the *change* in the span's width (new vs. old text,
+  measured with the same font), so an edit that doesn't change the text length
+  leaves the rest of the line exactly where it was — neighbours don't drift.
 - Other blocks (e.g. other table rows, other paragraphs) are never touched.
+
+To reposition text outright (not just reflow it), select the span and **drag it**
+or use the **arrow keys** — see "Move a selected span" above.
 
 This gives sentence-like reflow where you want it and column stability where you
 need it, from the same action. Full multi-line *paragraph* reflow (re-wrapping

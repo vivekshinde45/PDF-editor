@@ -71,6 +71,7 @@ class MainWindow(QMainWindow):
 
         self.view = PageView()
         self.view.span_clicked.connect(self._on_span_clicked)
+        self.view.span_moved.connect(self._on_span_moved)
         scroll = QScrollArea()
         scroll.setWidget(self.view)
         scroll.setWidgetResizable(False)
@@ -207,7 +208,10 @@ class MainWindow(QMainWindow):
         self.btn_bold.setEnabled(True)
         self.btn_italic.setEnabled(True)
         self.btn_apply.setEnabled(True)
-        self._status("Editing this text in place keeps the surrounding layout.")
+        self._status(
+            "Edit in place keeps the layout. Drag the box (or use arrow keys; "
+            "Shift = 10pt) to move this text."
+        )
 
     def _load_span_text(self, span: Span) -> None:
         """Populate the editor with the span's text, preserving bold/italic."""
@@ -273,6 +277,39 @@ class MainWindow(QMainWindow):
             self._status("Edit applied.", ok=True)
         else:
             self._status(f"⚠ {result.message}")
+
+    def _on_span_moved(self, span: Span, dx: float, dy: float) -> None:
+        if span is None or not self.ctrl.is_open:
+            return
+        result = self.ctrl.move_span(self._page_index, span, dx, dy)
+        if not result.ok:
+            self._error(result.message or "Move failed.")
+            return
+        # The page is re-extracted on reload, so the old Span object is stale.
+        # Re-select the moved text at its new location to keep nudging fluid.
+        target = (span.origin[0] + dx, span.origin[1] + dy)
+        self._load_page()
+        moved = self._find_span_near(span.text, target)
+        if moved is not None:
+            self.view.select(moved)
+            self._on_span_clicked(moved)
+        self._refresh_actions()
+        if result.fidelity == Fidelity.EXACT:
+            self._status("Moved.", ok=True)
+        else:
+            self._status(f"⚠ {result.message}")
+
+    def _find_span_near(self, text: str, origin: tuple[float, float]) -> Span | None:
+        """The span with matching text whose origin is closest to ``origin``."""
+        best: Span | None = None
+        best_d: float | None = None
+        for s in self.view.spans:
+            if s.text != text:
+                continue
+            d = (s.origin[0] - origin[0]) ** 2 + (s.origin[1] - origin[1]) ** 2
+            if best_d is None or d < best_d:
+                best_d, best = d, s
+        return best
 
     # -- helpers --------------------------------------------------------
 

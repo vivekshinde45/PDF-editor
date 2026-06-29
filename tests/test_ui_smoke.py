@@ -61,6 +61,31 @@ def test_open_select_edit_cycle(qapp, simple_pdf):
     assert win.ctrl.can_undo()
 
 
+def test_move_span_relocates_and_reselects(qapp, simple_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(simple_pdf)
+    win._load_page()
+    win._refresh_actions()
+
+    target = next(s for s in win.ctrl.spans(0) if "12345" in s.text)
+    ox, oy = target.origin
+    win.view.select(target)
+    win._on_span_clicked(target)
+
+    # Drive the move the way the canvas would (drag / arrow key) emits it.
+    win._on_span_moved(target, 30.0, 20.0)
+
+    # Text survives, lands near the new origin, the move is undoable, and the
+    # moved span is re-selected so further nudges keep working.
+    moved = next(s for s in win.ctrl.spans(0) if "12345" in s.text)
+    assert abs(moved.origin[0] - (ox + 30.0)) < 3.0
+    assert abs(moved.origin[1] - (oy + 20.0)) < 3.0
+    assert win.ctrl.can_undo()
+    assert win.view.selected is not None and "12345" in win.view.selected.text
+
+
 def test_extract_runs_captures_bold(qapp, simple_pdf):
     from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor
 
