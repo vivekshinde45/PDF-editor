@@ -11,6 +11,8 @@ text-based (digitally generated) PDFs. See the design spec at
 
 - Opens and renders PDFs faithfully (embedded fonts, vector art, images shown
   as authored — rendered by MuPDF).
+- **Navigate multi-page documents**: a thumbnail rail (click to jump), prev/next
+  buttons, a go-to-page box, and **PageUp/PageDown** + **Home/End** keys.
 - Detects text blocks; click one to select it.
 - Edit text **in place, one span at a time**, so surrounding content and table
   column alignment are preserved (see "Editing model" below).
@@ -81,8 +83,9 @@ QT_QPA_PLATFORM=offscreen pytest         # include headless UI smoke tests
 app/  (PySide6 GUI)        ──depends on──▶  pdfcore/  (Qt-free engine)
   main_window.py                              document.py   open / render / save
   page_view.py    canvas + block boxes        blocks.py     extract TextBlocks
-  controller.py   UI↔engine, undo             fonts.py      font resolution
-main.py           entry point                 editor.py     redact + reinsert
+  thumbnail_bar.py  page nav rail             fonts.py      font resolution
+  controller.py   UI↔engine, undo/redo        editor.py     redact + reinsert
+main.py           entry point                 surgical.py   content-stream edit
 ```
 
 `pdfcore` has no Qt imports, so the engine is unit-tested directly.

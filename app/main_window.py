@@ -28,6 +28,7 @@ from pdfcore.editor import Fidelity
 
 from .controller import Controller
 from .page_view import PageView
+from .thumbnail_bar import ThumbnailBar
 
 _SCALE = 2.0  # render zoom: crisp on screen, mapped back to points for edits
 
@@ -49,6 +50,11 @@ class MainWindow(QMainWindow):
         central = QWidget()
         root = QHBoxLayout(central)
 
+        # Left: thumbnail navigation rail.
+        self.thumbs = ThumbnailBar()
+        self.thumbs.page_selected.connect(self._on_thumbnail_selected)
+        root.addWidget(self.thumbs)
+
         # Center: toolbar + scrollable page.
         center = QVBoxLayout()
         bar = QHBoxLayout()
@@ -60,16 +66,28 @@ class MainWindow(QMainWindow):
         self.btn_undo.clicked.connect(self._on_undo)
         self.btn_redo = QPushButton("Redo")
         self.btn_redo.clicked.connect(self._on_redo)
+        self.btn_prev = QPushButton("◀")
+        self.btn_prev.setFixedWidth(32)
+        self.btn_prev.setToolTip("Previous page")
+        self.btn_prev.clicked.connect(self._on_prev_page)
+        self.btn_next = QPushButton("▶")
+        self.btn_next.setFixedWidth(32)
+        self.btn_next.setToolTip("Next page")
+        self.btn_next.clicked.connect(self._on_next_page)
         self.page_spin = QSpinBox()
         self.page_spin.setMinimum(1)
         self.page_spin.valueChanged.connect(self._on_page_changed)
+        self.lbl_page_count = QLabel("/ 0")
         bar.addWidget(self.btn_open)
         bar.addWidget(self.btn_save)
         bar.addWidget(self.btn_undo)
         bar.addWidget(self.btn_redo)
         bar.addStretch(1)
         bar.addWidget(QLabel("Page"))
+        bar.addWidget(self.btn_prev)
         bar.addWidget(self.page_spin)
+        bar.addWidget(self.lbl_page_count)
+        bar.addWidget(self.btn_next)
         center.addLayout(bar)
 
         self.view = PageView()
@@ -183,6 +201,8 @@ class MainWindow(QMainWindow):
         self._page_index = 0
         self.page_spin.setMaximum(self.ctrl.page_count)
         self.page_spin.setValue(1)
+        self.lbl_page_count.setText(f"/ {self.ctrl.page_count}")
+        self.thumbs.populate(self.ctrl)
         self._load_page()
         self._refresh_actions()
 
@@ -253,6 +273,16 @@ class MainWindow(QMainWindow):
             return
         self._page_index = value - 1
         self._load_page()
+
+    def _on_prev_page(self) -> None:
+        self.page_spin.setValue(self.page_spin.value() - 1)  # clamped by min/max
+
+    def _on_next_page(self) -> None:
+        self.page_spin.setValue(self.page_spin.value() + 1)
+
+    def _on_thumbnail_selected(self, index: int) -> None:
+        if self.ctrl.is_open and 0 <= index < self.ctrl.page_count:
+            self.page_spin.setValue(index + 1)  # routes through _on_page_changed
 
     def _on_span_clicked(self, span: Span | None) -> None:
         if span is None:
@@ -374,6 +404,22 @@ class MainWindow(QMainWindow):
                 best_d, best = d, s
         return best
 
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        """PageUp/PageDown and Home/End navigate pages (when a doc is open)."""
+        if not self.ctrl.is_open:
+            return super().keyPressEvent(event)
+        key = event.key()
+        if key == Qt.Key.Key_PageDown:
+            self._on_next_page()
+        elif key == Qt.Key.Key_PageUp:
+            self._on_prev_page()
+        elif key == Qt.Key.Key_Home:
+            self.page_spin.setValue(1)
+        elif key == Qt.Key.Key_End:
+            self.page_spin.setValue(self.ctrl.page_count)
+        else:
+            return super().keyPressEvent(event)
+
     # -- helpers --------------------------------------------------------
 
     def _load_page(self) -> None:
@@ -382,6 +428,9 @@ class MainWindow(QMainWindow):
         rendered = self.ctrl.render(self._page_index, _SCALE)
         blocks = self.ctrl.blocks(self._page_index)
         self.view.set_page(rendered, blocks)
+        self.thumbs.set_current(self._page_index)
+        self.btn_prev.setEnabled(self._page_index > 0)
+        self.btn_next.setEnabled(self._page_index < self.ctrl.page_count - 1)
         self._clear_panel()
 
     def _clear_panel(self) -> None:
@@ -403,6 +452,9 @@ class MainWindow(QMainWindow):
         is_open = self.ctrl.is_open
         self.btn_save.setEnabled(is_open)
         self.page_spin.setEnabled(is_open)
+        multipage = is_open and self.ctrl.page_count > 1
+        self.btn_prev.setEnabled(multipage and self._page_index > 0)
+        self.btn_next.setEnabled(multipage and self._page_index < self.ctrl.page_count - 1)
         self.btn_undo.setEnabled(is_open and self.ctrl.can_undo())
         self.btn_redo.setEnabled(is_open and self.ctrl.can_redo())
 

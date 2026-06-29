@@ -143,6 +143,76 @@ def test_copy_button_puts_text_on_clipboard(qapp, simple_pdf):
     assert "12345" in QGuiApplication.clipboard().text()
 
 
+def test_navigation_changes_current_page(qapp, multipage_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(multipage_pdf)
+    win.page_spin.setMaximum(win.ctrl.page_count)
+    win.thumbs.populate(win.ctrl)
+    win.page_spin.setValue(1)
+    win._load_page()
+
+    assert win._page_index == 0
+    win._on_next_page()
+    assert win._page_index == 1
+    assert win.thumbs.currentRow() == 1  # thumbnail stays in sync
+    win._on_prev_page()
+    assert win._page_index == 0
+    # Home/End jump to first/last.
+    win.page_spin.setValue(win.ctrl.page_count)
+    assert win._page_index == 2
+
+
+def test_thumbnail_click_navigates(qapp, multipage_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(multipage_pdf)
+    win.page_spin.setMaximum(win.ctrl.page_count)
+    win.thumbs.populate(win.ctrl)
+    win._load_page()
+
+    # Picking a thumbnail drives the current page.
+    win._on_thumbnail_selected(2)
+    assert win._page_index == 2
+
+
+def test_thumbnails_render_at_small_scale(qapp, multipage_pdf):
+    from app.main_window import MainWindow
+    from app.thumbnail_bar import _THUMB_SCALE
+
+    win = MainWindow()
+    win.ctrl.open(multipage_pdf)
+    win.thumbs.populate(win.ctrl)
+
+    assert win.thumbs.count() == 3
+    # Thumbnails are rendered much smaller than the editing canvas (2x).
+    assert _THUMB_SCALE < 1.0
+    thumb = win.ctrl.render(0, _THUMB_SCALE)
+    full = win.ctrl.render(0, 2.0)
+    assert thumb.width < full.width
+
+
+def test_edit_on_second_page_via_ui(qapp, multipage_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(multipage_pdf)
+    win.page_spin.setMaximum(win.ctrl.page_count)
+    win.thumbs.populate(win.ctrl)
+    win._load_page()
+
+    win._on_next_page()  # go to page 2 (index 1)
+    target = next(s for s in win.ctrl.spans(1) if "marker 2" in s.text)
+    win.view.select(target)
+    win.edit.setPlainText("Page marker EDITED")
+    win._on_apply()
+
+    assert "EDITED" in win.ctrl.page_text(1)
+    assert "EDITED" not in win.ctrl.page_text(0)
+
+
 def test_extract_runs_captures_bold(qapp, simple_pdf):
     from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor
 

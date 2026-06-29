@@ -69,3 +69,26 @@ def test_page_text_returns_document_text(simple_pdf):
     text = ctrl.page_text(0)
     assert "12345" in text
     assert "business" in text.lower()
+
+
+def test_each_page_renders_and_reads_independently(multipage_pdf):
+    ctrl = Controller()
+    ctrl.open(multipage_pdf)
+    assert ctrl.page_count == 3
+    for i in range(3):
+        assert f"marker {i + 1}" in ctrl.page_text(i)
+        rendered = ctrl.render(i, 1.0)
+        assert rendered.width > 0 and rendered.height > 0
+
+
+def test_edit_targets_only_its_own_page(multipage_pdf):
+    ctrl = Controller()
+    ctrl.open(multipage_pdf)
+    span = next(s for s in ctrl.spans(1) if "marker 2" in s.text)
+
+    ctrl.edit_span(1, span, "Page marker EDITED")
+    assert "EDITED" in ctrl.page_text(1)
+    # Other pages are untouched.
+    assert "marker 1" in ctrl.page_text(0)
+    assert "EDITED" not in ctrl.page_text(0)
+    assert "marker 3" in ctrl.page_text(2)

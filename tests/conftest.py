@@ -23,6 +23,19 @@ def simple_pdf(tmp_path):
 
 
 @pytest.fixture()
+def multipage_pdf(tmp_path):
+    """A three-page PDF, each page carrying a distinct marker string."""
+    path = tmp_path / "multipage.pdf"
+    doc = fitz.open()
+    for i in range(3):
+        page = doc.new_page(width=595, height=842)
+        page.insert_text((72, 100), f"Page marker {i + 1}", fontname="helv", fontsize=14)
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+@pytest.fixture()
 def multiline_pdf(tmp_path):
     """A one-page PDF whose single block spans three wrapped lines."""
     path = tmp_path / "multi.pdf"
