@@ -1,0 +1,8 @@
+# PDF Editor v1 dependencies
+# PyMuPDF: rendering, text extraction with styling, redaction + text reinsertion
+PyMuPDF>=1.24.0
+# PySide6: desktop GUI
+PySide6>=6.6.0
+
+# Dev / test
+pytest>=8.0.0
