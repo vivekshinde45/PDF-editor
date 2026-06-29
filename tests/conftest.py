@@ -111,6 +111,27 @@ def bold_number_pdf(tmp_path):
 
 
 @pytest.fixture()
+def mixed_font_pdf(tmp_path):
+    """A page with two same-stem fonts (Verdana + Verdana-Bold) drawing disjoint
+    characters — used to prove glyph-id usage maps don't cross-contaminate."""
+    import os
+
+    reg, bold = r"C:\Windows\Fonts\verdana.ttf", r"C:\Windows\Fonts\verdanab.ttf"
+    if not (os.path.exists(reg) and os.path.exists(bold)):
+        pytest.skip("Verdana fonts not available")
+    path = tmp_path / "mixed.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=160)
+    page.insert_font(fontname="vr", fontfile=reg)
+    page.insert_font(fontname="vb", fontfile=bold)
+    page.insert_text((40, 60), "regular", fontname="vr", fontsize=14)   # r,e,g,u,l,a
+    page.insert_text((40, 100), "BOLDXYZ", fontname="vb", fontsize=14)  # B,O,L,D,X,Y,Z
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+@pytest.fixture()
 def styled_pdf(tmp_path):
     """A block containing a bold word and an italic word (Base-14 styles)."""
     path = tmp_path / "styled.pdf"

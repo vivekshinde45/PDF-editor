@@ -31,6 +31,19 @@ def two_block_pdf(tmp_path):
 
 
 @pytest.fixture()
+def sentence_pdf(tmp_path):
+    """One line where a value is followed (small word-gap) by more words."""
+    path = tmp_path / "sentence.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=520, height=140)
+    page.insert_text((40, 70), "Salary", fontname="helv", fontsize=13)
+    page.insert_text((95, 70), "and more text", fontname="helv", fontsize=13)
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+@pytest.fixture()
 def gapped_block_pdf(tmp_path):
     """One block containing two tokens separated by a positional gap."""
     path = tmp_path / "gapped.pdf"
@@ -205,4 +218,51 @@ def test_span_edit_keeps_other_columns_in_place(gapped_block_pdf):
         second_after = next(s for s in after if "rideId" in s.text)
         assert abs(round(second_after.bbox[0], 1) - second_x_before) < 1.0, (
             "second column moved — alignment broken"
+        )
+
+
+# ---- R8: inline edit reflows the rest of the line (no gap/overlap) ----------
+
+def _word_gap(a, b):
+    """Horizontal gap between span a's end and span b's start."""
+    return b.bbox[0] - a.bbox[2]
+
+
+def test_inline_edit_reflows_following_words(sentence_pdf):
+    """Editing a word in a sentence shifts the following words so the word-gap
+    is preserved — no gap when shorter, no overlap when longer."""
+    with PdfDocument.open(sentence_pdf) as doc:
+        spans = _all_spans(doc)
+        first = next(s for s in spans if "Salary" in s.text)
+        tail = next(s for s in spans if "and" in s.text)
+        gap_before = _word_gap(first, tail)
+        block = next(b for b in extract_blocks(doc.page(0)) if b.editable and first in b.spans)
+
+        # Shorten the first word; the tail must move left to keep the gap.
+        apply_span_edit(doc.page(0), first, [("Pay", first.bold, first.italic)], block.spans)
+
+        after = _all_spans(doc)
+        first_after = next(s for s in after if "Pay" in s.text)
+        tail_after = next(s for s in after if "and" in s.text)
+        gap_after = _word_gap(first_after, tail_after)
+        assert abs(gap_after - gap_before) < 3.0, (
+            f"word gap not preserved: {gap_before:.1f} -> {gap_after:.1f}"
+        )
+
+
+def test_reflow_stops_at_column_gap(gapped_block_pdf):
+    """When following content sits after a wide (column) gap, editing must NOT
+    shift it — table columns stay aligned even with reflow enabled."""
+    with PdfDocument.open(gapped_block_pdf) as doc:
+        block = next(b for b in extract_blocks(doc.page(0)) if b.editable)
+        first = next(s for s in block.spans if "ride.id" in s.text)
+        second = next(s for s in block.spans if "rideId" in s.text)
+        x_before = round(second.bbox[0], 1)
+
+        apply_span_edit(doc.page(0), first, "ride.identifier", block.spans)
+
+        after = _all_spans(doc)
+        second_after = next(s for s in after if "rideId" in s.text)
+        assert abs(round(second_after.bbox[0], 1) - x_before) < 1.0, (
+            "column shifted despite wide gap"
         )

@@ -7,9 +7,25 @@ engine to re-extract blocks so the UI always works against ground truth.
 
 from __future__ import annotations
 
+import fitz
+
 from pdfcore.blocks import Span, TextBlock, extract_blocks
 from pdfcore.document import PdfDocument
-from pdfcore.editor import EditResult, apply_edit, apply_span_edit
+from pdfcore.editor import EditResult, Fidelity, apply_edit, apply_span_edit
+from pdfcore.surgical import surgical_replace
+
+
+def _normalize(runs) -> list[tuple[str, bool, bool]]:
+    """Normalize a plain string or (text, bold[, italic]) tuples to triples."""
+    if isinstance(runs, str):
+        return [(runs, False, False)]
+    out = []
+    for r in runs:
+        if r[0] == "":
+            continue
+        out.append((r[0], bool(r[1]) if len(r) > 1 else False,
+                    bool(r[2]) if len(r) > 2 else False))
+    return out
 
 
 class Controller:
@@ -68,14 +84,54 @@ class Controller:
             self._undo.pop()  # nothing changed; discard the snapshot
         return result
 
-    def edit_span(self, index: int, span: Span, runs) -> EditResult:
-        """Edit a single span in place (preserves neighbouring columns)."""
+    def edit_span(self, index: int, span: Span, runs, block_spans=None) -> EditResult:
+        """Edit a span. Prefers surgical content-stream editing (perfect
+        fidelity — keeps the original font/spacing); falls back to redraw.
+
+        Surgical is used only when the edit changes text without changing style
+        (bold/italic) and the new text is locatable + drawable in the original
+        font. Otherwise (style change, text in an XObject, missing glyph) the
+        redraw path runs, which also reflows the line.
+        """
         assert self._doc is not None
         self._snapshot()
-        result = apply_span_edit(self._doc.page(index), span, runs)
+
+        norm = _normalize(runs)
+        new_text = "".join(t for t, _b, _i in norm)
+        style_changed = any(b != span.bold or i != span.italic for _t, b, i in norm)
+
+        if not style_changed and new_text != span.text:
+            occ = self._occurrence(index, span)
+            new_bytes = surgical_replace(
+                self._doc.fitz_doc.tobytes(), index, span.text, new_text, occ
+            )
+            if new_bytes is not None:
+                self._reload(new_bytes)
+                return EditResult(ok=True, fidelity=Fidelity.EXACT)
+
+        result = apply_span_edit(self._doc.page(index), span, runs, block_spans)
         if not result.ok:
             self._undo.pop()
         return result
+
+    def _occurrence(self, index: int, span: Span) -> int:
+        """How many editable spans with the same text precede ``span`` on the page."""
+        count = 0
+        for b in self.blocks(index):
+            if not b.editable:
+                continue
+            for s in b.spans:
+                if s is span:
+                    return count
+                if s.text == span.text:
+                    count += 1
+        return count
+
+    def _reload(self, pdf_bytes: bytes) -> None:
+        path = self._doc.path if self._doc else None
+        if self._doc is not None:
+            self._doc.close()
+        self._doc = PdfDocument(fitz.open(stream=pdf_bytes, filetype="pdf"), path)
 
     def can_undo(self) -> bool:
         return bool(self._undo)

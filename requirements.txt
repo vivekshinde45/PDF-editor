@@ -3,6 +3,12 @@
 PyMuPDF>=1.24.0
 # PySide6: desktop GUI
 PySide6>=6.6.0
+# fontTools: augment subset Identity-H fonts with a Unicode cmap so the original
+# embedded font can be reused on edit (preserves exact font + weight)
+fontTools>=4.40.0
+# pikepdf (QPDF): surgical content-stream editing — rewrite glyph codes in the
+# original text operators for pixel-faithful edits (font/spacing preserved)
+pikepdf>=9.0.0
 
 # Dev / test
 pytest>=8.0.0

@@ -26,8 +26,10 @@ class PageView(QWidget):
         self._pixmap: QPixmap | None = None
         self._blocks: list[TextBlock] = []
         self._spans: list[Span] = []
+        self._span_block: dict[int, TextBlock] = {}
         self._scale: float = 1.0
         self._selected: Span | None = None
+        self._selected_block: TextBlock | None = None
         self.setMinimumSize(400, 500)
         self.setMouseTracking(True)
 
@@ -42,8 +44,10 @@ class PageView(QWidget):
         self._pixmap = QPixmap.fromImage(img)
         self._blocks = blocks
         self._spans = [s for b in blocks if b.editable for s in b.spans]
+        self._span_block = {id(s): b for b in blocks if b.editable for s in b.spans}
         self._scale = rendered.scale
         self._selected = None
+        self._selected_block = None
         self.setFixedSize(rendered.width, rendered.height)
         self.update()
 
@@ -51,8 +55,13 @@ class PageView(QWidget):
     def selected(self) -> Span | None:
         return self._selected
 
+    @property
+    def selected_block(self) -> TextBlock | None:
+        return self._selected_block
+
     def clear_selection(self) -> None:
         self._selected = None
+        self._selected_block = None
         self.update()
 
     # -- painting -------------------------------------------------------
@@ -101,5 +110,6 @@ class PageView(QWidget):
                 if best_area is None or area < best_area:
                     best_area, hit = area, span
         self._selected = hit
+        self._selected_block = self._span_block.get(id(hit)) if hit else None
         self.update()
         self.span_clicked.emit(hit)

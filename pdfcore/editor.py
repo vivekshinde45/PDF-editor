@@ -27,7 +27,7 @@ from dataclasses import dataclass
 import fitz
 
 from .blocks import Span, TextBlock
-from .fonts import extract_embedded_font, font_missing_glyphs, resolve_font
+from .fonts import resolve_font, reusable_font, system_font_for
 
 # A run of text with uniform bold/italic flags.
 Run = tuple[str, bool, bool]
@@ -136,16 +136,141 @@ def apply_edit(page: fitz.Page, block: TextBlock, new_text_or_runs: str | list[R
     return EditResult(ok=True, fidelity=Fidelity.EXACT)
 
 
-def apply_span_edit(page: fitz.Page, span: Span, new_text_or_runs) -> EditResult:
-    """Edit a single span IN PLACE, leaving every other span untouched.
+# A gap wider than this many font sizes marks a column boundary (not word space).
+_COLUMN_GAP = 2.0
 
-    This is the alignment-preserving path: only the span's own rectangle is
-    redacted and the new text is drawn at the span's original baseline, so
-    neighbouring cells/columns do not move. Used for tables and any layout where
-    reflowing the whole block would break alignment.
+
+def apply_span_edit(
+    page: fitz.Page, span: Span, new_text_or_runs, block_spans: list[Span] | None = None
+) -> EditResult:
+    """Edit a single span at its original position, reflowing the rest of its line.
+
+    The edited text is drawn at the span's baseline. Words that follow it *on the
+    same line* (within ``block_spans``) are shifted by the width change so a
+    sentence closes up / makes room instead of leaving a gap or overlapping.
+
+    Shifting STOPS at a column-sized gap: content that sits after a wide gap is a
+    separate column and stays put, so table alignment is preserved. With no
+    ``block_spans`` (or none following), this is a pure in-place edit.
     """
-    block = TextBlock(bbox=span.bbox, spans=[span], editable=True, line_count=1)
-    return apply_edit(page, block, new_text_or_runs)
+    runs = _normalize_runs(new_text_or_runs) or [("", False, False)]
+    text = _full_text(runs)
+    size = span.size
+
+    buffer, fontname, measure_font, substituted = _choose_font(page, span.font_name, text)
+    new_width = _measure_width(measure_font, runs, size)
+    delta = new_width - (span.bbox[2] - span.bbox[0])
+
+    following = _inline_following(span, block_spans or [], size)
+
+    # Redact the edited span and every span we're about to move, then redraw all.
+    page.add_redact_annot(fitz.Rect(*span.bbox), fill=False, cross_out=False)
+    for s in following:
+        page.add_redact_annot(fitz.Rect(*s.bbox), fill=False, cross_out=False)
+    page.apply_redactions(images=0, graphics=0)
+
+    if buffer is not None:
+        page.insert_font(fontname=fontname, fontbuffer=buffer)
+    edited_end = _draw_line(
+        page, span.origin[0], span.origin[1], runs, fontname, measure_font,
+        size, span.color, span.bold, span.italic,
+    )
+
+    rightmost = edited_end
+    for s in following:
+        s_buf, s_name, s_meas, _sub = _choose_font(page, s.font_name, s.text)
+        if s_buf is not None:
+            s_name = _reg_name(s.font_name)
+            page.insert_font(fontname=s_name, fontbuffer=s_buf)
+        end = _draw_line(
+            page, s.origin[0] + delta, s.origin[1], [(s.text, s.bold, s.italic)],
+            s_name, s_meas, s.size, s.color, s.bold, s.italic,
+        )
+        rightmost = max(rightmost, end)
+
+    if rightmost > page.rect.x1 - _PADDING:
+        return EditResult(
+            ok=True,
+            fidelity=Fidelity.OVERFLOW,
+            message="Edited text runs past the page margin; shorten it.",
+        )
+    if substituted:
+        return EditResult(
+            ok=True,
+            fidelity=Fidelity.FONT_SUBSTITUTED,
+            message=(
+                f"Original font '{span.font_name}' is missing glyphs for the new "
+                f"text (or isn't reusable); a similar standard font was used."
+            ),
+        )
+    return EditResult(ok=True, fidelity=Fidelity.EXACT)
+
+
+def _reg_name(font_name: str) -> str:
+    return "ed" + re.sub(r"[^a-z0-9]", "", font_name.lower())[:18] or "edfont"
+
+
+def _measure_width(measure_font, runs, size) -> float:
+    """Width of ``runs`` rendered on a single line."""
+    space_w = measure_font.text_length(" ", fontsize=size)
+    x = 0.0
+    pending = False
+    for tok in _tokenize(runs):
+        if tok[0] == "space" or tok[0] == "break":
+            pending = True
+            continue
+        if pending and x > 0:
+            x += space_w
+        pending = False
+        x += measure_font.text_length(tok[1], fontsize=size)
+    return x
+
+
+def _inline_following(span: Span, spans: list[Span], size: float) -> list[Span]:
+    """Spans after ``span`` on the same line, up to the first column-sized gap."""
+    same_line = sorted(
+        (s for s in spans
+         if s is not span
+         and abs(s.origin[1] - span.origin[1]) <= 0.5 * size
+         and s.bbox[0] >= span.bbox[2] - 0.1),
+        key=lambda s: s.bbox[0],
+    )
+    out: list[Span] = []
+    prev_end = span.bbox[2]
+    for s in same_line:
+        if s.bbox[0] - prev_end > _COLUMN_GAP * size:
+            break  # a new column begins here — leave it (and the rest) in place
+        out.append(s)
+        prev_end = s.bbox[2]
+    return out
+
+
+def _draw_line(page, bx, by, runs, fontname, measure_font, size, color, base_bold, base_italic) -> float:
+    """Draw runs on one line starting at baseline (bx, by). Returns the end x."""
+    space_w = measure_font.text_length(" ", fontsize=size)
+    x = bx
+    pending = False
+    for tok in _tokenize(runs):
+        if tok[0] == "space" or tok[0] == "break":
+            pending = True
+            continue
+        word, bold, italic = tok[1], tok[2], tok[3]
+        if pending and x > bx:
+            x += space_w
+        pending = False
+        synth_bold = bold and not base_bold
+        synth_italic = italic and not base_italic
+        morph = (
+            (fitz.Point(x, by), fitz.Matrix(1, 0, _ITALIC_SHEAR, 1, 0, 0))
+            if synth_italic else None
+        )
+        page.insert_text(
+            (x, by), word, fontname=fontname, fontsize=size, color=color, fill=color,
+            render_mode=2 if synth_bold else 0,
+            border_width=_BOLD_BORDER if synth_bold else 1, morph=morph,
+        )
+        x += measure_font.text_length(word, fontsize=size)
+    return x
 
 
 def _choose_font(page, font_name, text):
@@ -156,9 +281,15 @@ def _choose_font(page, font_name, text):
     embedded font is reused, ``buffer`` is its program bytes (the caller registers
     it after redaction); otherwise ``buffer`` is None.
     """
-    buffer = extract_embedded_font(page, font_name)
-    if buffer is not None and not font_missing_glyphs(buffer, text):
+    buffer = reusable_font(page, font_name, text)
+    if buffer is not None:
         return buffer, _EMBED_FONTNAME, fitz.Font(fontbuffer=buffer), False
+
+    # Embedded subset can't draw it — reuse the SAME family from system fonts
+    # (real Verdana-Bold etc.) before resorting to a generic Base-14 substitute.
+    sysbuf = system_font_for(font_name, text)
+    if sysbuf is not None:
+        return sysbuf, _EMBED_FONTNAME, fitz.Font(fontbuffer=sysbuf), False
 
     resolved = resolve_font(font_name)
     return None, resolved.fontname, fitz.Font(resolved.fontname), resolved.substituted

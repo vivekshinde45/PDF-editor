@@ -261,7 +261,9 @@ class MainWindow(QMainWindow):
         if span is None or not self.ctrl.is_open:
             return
         runs = self._extract_runs()
-        result = self.ctrl.edit_span(self._page_index, span, runs)
+        block = self.view.selected_block
+        block_spans = block.spans if block else None
+        result = self.ctrl.edit_span(self._page_index, span, runs, block_spans)
         if not result.ok:
             self._error(result.message or "Edit failed.")
             return
