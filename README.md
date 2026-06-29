@@ -36,20 +36,28 @@ a font attribute in PDF (it's a drawn line), so it isn't detected or applied.
 
 ## Setup
 
+Requires **Python 3.11 or 3.12** (recommended). Newer versions such as 3.13/3.14
+may not yet have prebuilt PySide6/PyMuPDF wheels and can fail to install. On
+macOS/Linux use `python3`; on Windows the launcher is usually `python`.
+
 ```bash
-python -m venv .venv
-# Windows
-.venv\Scripts\activate
 # macOS/Linux
+python3 -m venv .venv
 source .venv/bin/activate
+
+# Windows
+python -m venv .venv
+.venv\Scripts\activate
 
 pip install -r requirements.txt
 ```
 
 ## Run
 
+After activating the venv, `python` points at the venv interpreter:
+
 ```bash
-python main.py                 # open the app, then File → Open
+python main.py                   # open the app, then File → Open
 python main.py path/to/file.pdf  # open a file directly
 ```
 
