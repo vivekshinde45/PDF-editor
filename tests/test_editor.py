@@ -280,6 +280,81 @@ def test_duplicate_off_page_flags_overflow(simple_pdf):
         assert result.fidelity == F.OVERFLOW
 
 
+def test_insert_adds_new_text_without_disturbing_existing(simple_pdf):
+    from pdfcore.insert import insert_text_box
+
+    with PdfDocument.open(simple_pdf) as doc:
+        before = sorted(s.text for b in extract_blocks(doc.page(0))
+                        if b.editable for s in b.spans)
+        result = insert_text_box(doc.page(0), (72, 600, 400, 660), "Brand new line")
+        assert result.ok
+        spans_after = [s.text for b in extract_blocks(doc.page(0))
+                       if b.editable for s in b.spans]
+        assert any("Brand new line" in t for t in spans_after)
+        # Every original span is still present.
+        for original in before:
+            assert any(original in t for t in spans_after)
+
+
+def test_insert_roundtrips(simple_pdf, tmp_path):
+    from pdfcore.insert import insert_text_box
+
+    with PdfDocument.open(simple_pdf) as doc:
+        insert_text_box(doc.page(0), (72, 600, 400, 660), "Persisted text")
+        out = tmp_path / "ins.pdf"
+        doc.save_as(str(out))
+    with PdfDocument.open(str(out)) as doc2:
+        full = " ".join(b.text for b in extract_blocks(doc2.page(0)) if b.editable)
+        assert "Persisted text" in full
+
+
+def test_size_override_changes_rendered_size(simple_pdf):
+    """Editing with a larger override_size yields a taller glyph bbox."""
+    from pdfcore.editor import apply_span_edit
+
+    def edited_height(size):
+        with PdfDocument.open(simple_pdf) as doc:
+            block = _first_block_with(doc, "Invoice number 12345")
+            apply_span_edit(doc.page(0), block.spans[0], "Sized text",
+                            override_size=size)
+            sp = next(s for b in extract_blocks(doc.page(0)) if b.editable
+                      for s in b.spans if "Sized" in s.text)
+            return sp.bbox[3] - sp.bbox[1]
+
+    assert edited_height(24.0) > edited_height(10.0) * 1.5
+
+
+def test_color_override_changes_pixel_color(simple_pdf):
+    """Editing with a red override paints red pixels where the text is."""
+    import fitz
+
+    from pdfcore.editor import apply_span_edit
+
+    with PdfDocument.open(simple_pdf) as doc:
+        block = _first_block_with(doc, "Invoice number 12345")
+        apply_span_edit(doc.page(0), block.spans[0], "Red text",
+                        override_color=(1.0, 0.0, 0.0))
+        pix = doc.page(0).get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+        s = pix.samples
+        red = sum(1 for i in range(0, len(s), 3)
+                  if s[i] > 150 and s[i + 1] < 80 and s[i + 2] < 80)
+    assert red > 0
+
+
+def test_no_override_matches_default_behaviour(simple_pdf):
+    """apply_span_edit with no overrides must produce the same extracted size as
+    editing normally — guards that the new params didn't change v1 output."""
+    from pdfcore.editor import apply_span_edit
+
+    with PdfDocument.open(simple_pdf) as doc:
+        block = _first_block_with(doc, "Invoice number 12345")
+        orig_size = block.spans[0].size
+        apply_span_edit(doc.page(0), block.spans[0], "Plain text")
+        sp = next(s for b in extract_blocks(doc.page(0)) if b.editable
+                  for s in b.spans if "Plain" in s.text)
+        assert abs(sp.size - orig_size) < 0.5
+
+
 def test_font_resolution_flags_substitution():
     # A subsetted embedded font name → substituted.
     assert resolve_font("ABCDEF+CustomFont").substituted is True

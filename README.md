@@ -16,6 +16,12 @@ text-based (digitally generated) PDFs. See the design spec at
 - Detects text blocks; click one to select it.
 - Edit text **in place, one span at a time**, so surrounding content and table
   column alignment are preserved (see "Editing model" below).
+- **Find and replace** text on a page (case-insensitive); Find cycles through
+  matches, Replace all swaps every occurrence.
+- **Change font size and colour** of the selected text (size box + colour
+  picker in the panel).
+- **Add a new text box**: click **Add text**, then click on the page and type —
+  inserts fresh text without touching existing content.
 - Reuses the original embedded font so the font and weight do not change —
   including **subset Identity-H/CID fonts** that ship no Unicode cmap (common in
   real documents): the font is augmented with a character map recovered from the
@@ -86,6 +92,8 @@ app/  (PySide6 GUI)        ──depends on──▶  pdfcore/  (Qt-free engine)
   thumbnail_bar.py  page nav rail             fonts.py      font resolution
   controller.py   UI↔engine, undo/redo        editor.py     redact + reinsert
 main.py           entry point                 surgical.py   content-stream edit
+                                              search.py     find / replace
+                                              insert.py     add new text box
 ```
 
 `pdfcore` has no Qt imports, so the engine is unit-tested directly.

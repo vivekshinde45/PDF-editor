@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QGuiApplication, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
+    QColorDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -40,6 +42,8 @@ class MainWindow(QMainWindow):
         self.resize(1100, 800)
         self.ctrl = Controller()
         self._page_index = 0
+        self._last_query = ""   # for Find cycling
+        self._find_pos = -1
 
         self._build_ui()
         self._refresh_actions()
@@ -78,10 +82,15 @@ class MainWindow(QMainWindow):
         self.page_spin.setMinimum(1)
         self.page_spin.valueChanged.connect(self._on_page_changed)
         self.lbl_page_count = QLabel("/ 0")
+        self.btn_add_text = QPushButton("Add text")
+        self.btn_add_text.setCheckable(True)
+        self.btn_add_text.setToolTip("Click on the page to place a new text box")
+        self.btn_add_text.toggled.connect(self._on_toggle_add_text)
         bar.addWidget(self.btn_open)
         bar.addWidget(self.btn_save)
         bar.addWidget(self.btn_undo)
         bar.addWidget(self.btn_redo)
+        bar.addWidget(self.btn_add_text)
         bar.addStretch(1)
         bar.addWidget(QLabel("Page"))
         bar.addWidget(self.btn_prev)
@@ -90,10 +99,28 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.btn_next)
         center.addLayout(bar)
 
+        # Find / replace row.
+        find_row = QHBoxLayout()
+        self.find_field = QLineEdit()
+        self.find_field.setPlaceholderText("Find on this page…")
+        self.find_field.returnPressed.connect(self._on_find)
+        self.replace_field = QLineEdit()
+        self.replace_field.setPlaceholderText("Replace with…")
+        self.btn_find = QPushButton("Find")
+        self.btn_find.clicked.connect(self._on_find)
+        self.btn_replace_all = QPushButton("Replace all")
+        self.btn_replace_all.clicked.connect(self._on_replace_all)
+        find_row.addWidget(self.find_field, 1)
+        find_row.addWidget(self.replace_field, 1)
+        find_row.addWidget(self.btn_find)
+        find_row.addWidget(self.btn_replace_all)
+        center.addLayout(find_row)
+
         self.view = PageView()
         self.view.span_clicked.connect(self._on_span_clicked)
         self.view.span_moved.connect(self._on_span_moved)
         self.view.delete_requested.connect(self._on_delete)
+        self.view.insert_requested.connect(self._on_insert_text)
         scroll = QScrollArea()
         scroll.setWidget(self.view)
         scroll.setWidgetResizable(False)
@@ -119,6 +146,23 @@ class MainWindow(QMainWindow):
         for w in (self.lbl_font, self.lbl_size, self.lbl_color):
             w.setWordWrap(True)
             v.addWidget(w)
+
+        # Editable size + colour for the selected span.
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("Size:"))
+        self.size_spin = QDoubleSpinBox()
+        self.size_spin.setRange(1.0, 400.0)
+        self.size_spin.setSingleStep(0.5)
+        self.size_spin.setDecimals(1)
+        self.size_spin.setToolTip("Font size for the selected text")
+        style_row.addWidget(self.size_spin)
+        self.btn_color = QPushButton("Color…")
+        self.btn_color.setToolTip("Change the colour of the selected text")
+        self.btn_color.clicked.connect(self._pick_color)
+        style_row.addWidget(self.btn_color)
+        v.addLayout(style_row)
+        # The colour currently chosen for the selected span (rgb 0..1).
+        self._sel_color: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
         # Text label + Bold toggle on one row.
         text_row = QHBoxLayout()
@@ -268,6 +312,88 @@ class MainWindow(QMainWindow):
         QGuiApplication.clipboard().setText(span.text)
         self._status("Copied text to clipboard.", ok=True)
 
+    # -- size / colour --------------------------------------------------
+
+    def _pick_color(self) -> None:
+        r, g, b = (int(c * 255) for c in self._sel_color)
+        chosen = QColorDialog.getColor(QColor(r, g, b), self, "Text colour")
+        if chosen.isValid():
+            self._sel_color = (chosen.red() / 255, chosen.green() / 255, chosen.blue() / 255)
+            self._update_color_swatch()
+
+    def _update_color_swatch(self) -> None:
+        r, g, b = (int(c * 255) for c in self._sel_color)
+        self.btn_color.setStyleSheet(
+            f"background-color: #{r:02X}{g:02X}{b:02X}; "
+            f"color: {'#000' if (r + g + b) > 384 else '#fff'};"
+        )
+
+    # -- find / replace -------------------------------------------------
+
+    def _on_find(self) -> None:
+        if not self.ctrl.is_open:
+            return
+        query = self.find_field.text()
+        if not query:
+            return
+        matches = self.ctrl.find(self._page_index, query)
+        if not matches:
+            self._status(f"No matches for “{query}” on this page.")
+            return
+        # Cycle through matches on repeated Find.
+        if query != self._last_query:
+            self._find_pos = 0
+            self._last_query = query
+        else:
+            self._find_pos = (self._find_pos + 1) % len(matches)
+        span = matches[self._find_pos].span
+        self.view.select(span)
+        self._on_span_clicked(span)
+        self._status(f"Match {self._find_pos + 1} of {len(matches)}.")
+
+    def _on_replace_all(self) -> None:
+        if not self.ctrl.is_open:
+            return
+        query = self.find_field.text()
+        if not query:
+            return
+        replacement = self.replace_field.text()
+        count = self.ctrl.replace_all_in_page(self._page_index, query, replacement)
+        self._load_page()
+        self._refresh_actions()
+        if count:
+            self._status(f"Replaced {count} occurrence(s).", ok=True)
+        else:
+            self._status(f"No matches for “{query}” on this page.")
+
+    # -- add text -------------------------------------------------------
+
+    def _on_toggle_add_text(self, on: bool) -> None:
+        self.view.set_add_text_mode(on and self.ctrl.is_open)
+        if on:
+            self._status("Click on the page to place a new text box.")
+
+    def _on_insert_text(self, x: float, y: float) -> None:
+        if not self.ctrl.is_open:
+            return
+        text, ok = QInputDialog.getText(self, "Add text", "Text to insert:")
+        # Leave add-text mode after one placement.
+        self.btn_add_text.setChecked(False)
+        if not ok or not text:
+            return
+        # A default box growing right/down from the click point.
+        rect = (x, y, x + 260, y + 40)
+        result = self.ctrl.insert_text(self._page_index, rect, text)
+        if not result.ok:
+            self._error(result.message or "Insert failed.")
+            return
+        self._load_page()
+        self._refresh_actions()
+        if result.fidelity == Fidelity.EXACT:
+            self._status("Text inserted.", ok=True)
+        else:
+            self._status(f"⚠ {result.message}")
+
     def _on_page_changed(self, value: int) -> None:
         if not self.ctrl.is_open:
             return
@@ -295,6 +421,14 @@ class MainWindow(QMainWindow):
         self.lbl_color.setText(f"Color: #{r:02X}{g:02X}{b:02X}")
         self.edit.setEnabled(True)
         self._load_span_text(span)
+        # Seed the size/colour controls from the span (no change until applied).
+        self._sel_color = span.color
+        self.size_spin.blockSignals(True)
+        self.size_spin.setValue(span.size)
+        self.size_spin.blockSignals(False)
+        self._update_color_swatch()
+        self.size_spin.setEnabled(True)
+        self.btn_color.setEnabled(True)
         self.btn_bold.setEnabled(True)
         self.btn_italic.setEnabled(True)
         self.btn_apply.setEnabled(True)
@@ -360,7 +494,12 @@ class MainWindow(QMainWindow):
         runs = self._extract_runs()
         block = self.view.selected_block
         block_spans = block.spans if block else None
-        result = self.ctrl.edit_span(self._page_index, span, runs, block_spans)
+        # Pass the panel's size/colour; the controller treats them as overrides
+        # only when they differ from the span (so a pure text edit stays surgical).
+        result = self.ctrl.edit_span(
+            self._page_index, span, runs, block_spans,
+            size=self.size_spin.value(), color=self._sel_color,
+        )
         if not result.ok:
             self._error(result.message or "Edit failed.")
             return
@@ -431,6 +570,7 @@ class MainWindow(QMainWindow):
         self.thumbs.set_current(self._page_index)
         self.btn_prev.setEnabled(self._page_index > 0)
         self.btn_next.setEnabled(self._page_index < self.ctrl.page_count - 1)
+        self._last_query = ""  # restart Find cycling for the new page content
         self._clear_panel()
 
     def _clear_panel(self) -> None:
@@ -447,6 +587,8 @@ class MainWindow(QMainWindow):
         self.btn_delete.setEnabled(False)
         self.btn_duplicate.setEnabled(False)
         self.btn_copy.setEnabled(False)
+        self.size_spin.setEnabled(False)
+        self.btn_color.setEnabled(False)
 
     def _refresh_actions(self) -> None:
         is_open = self.ctrl.is_open
@@ -457,6 +599,9 @@ class MainWindow(QMainWindow):
         self.btn_next.setEnabled(multipage and self._page_index < self.ctrl.page_count - 1)
         self.btn_undo.setEnabled(is_open and self.ctrl.can_undo())
         self.btn_redo.setEnabled(is_open and self.ctrl.can_redo())
+        self.btn_find.setEnabled(is_open)
+        self.btn_replace_all.setEnabled(is_open)
+        self.btn_add_text.setEnabled(is_open)
 
     def _status(self, text: str, ok: bool = False) -> None:
         color = "#1d9e75" if ok else "#8a6d00"

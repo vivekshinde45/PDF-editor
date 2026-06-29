@@ -15,6 +15,8 @@ from pdfcore.editor import EditResult, Fidelity, apply_edit, apply_span_edit
 from pdfcore.editor import delete_span as _delete_span
 from pdfcore.editor import duplicate_span as _duplicate_span
 from pdfcore.editor import move_span as _move_span
+from pdfcore.insert import insert_text_box as _insert_text_box
+from pdfcore.search import Match, count_occurrences, find_spans, replace_occurrences
 from pdfcore.surgical import surgical_replace
 
 
@@ -95,7 +97,8 @@ class Controller:
             self._undo.pop()  # nothing changed; discard the snapshot
         return result
 
-    def edit_span(self, index: int, span: Span, runs, block_spans=None) -> EditResult:
+    def edit_span(self, index: int, span: Span, runs, block_spans=None,
+                  size: float | None = None, color=None) -> EditResult:
         """Edit a span. Prefers surgical content-stream editing (perfect
         fidelity — keeps the original font/spacing); falls back to redraw.
 
@@ -103,6 +106,10 @@ class Controller:
         (bold/italic) and the new text is locatable + drawable in the original
         font. Otherwise (style change, text in an XObject, missing glyph) the
         redraw path runs, which also reflows the line.
+
+        ``size`` / ``color`` optionally change the span's font size / colour;
+        because surgical editing cannot change those, supplying either forces the
+        redraw path. Passing neither preserves the original v1 behaviour exactly.
         """
         assert self._doc is not None
         self._snapshot()
@@ -110,8 +117,11 @@ class Controller:
         norm = _normalize(runs)
         new_text = "".join(t for t, _b, _i in norm)
         style_changed = any(b != span.bold or i != span.italic for _t, b, i in norm)
+        size_changed = size is not None and abs(size - span.size) > 1e-6
+        color_changed = color is not None and tuple(color) != tuple(span.color)
+        appearance_changed = style_changed or size_changed or color_changed
 
-        if not style_changed and new_text != span.text:
+        if not appearance_changed and new_text != span.text:
             occ = self._occurrence(index, span)
             new_bytes = surgical_replace(
                 self._doc.fitz_doc.tobytes(), index, span.text, new_text, occ
@@ -120,7 +130,10 @@ class Controller:
                 self._reload(new_bytes)
                 return EditResult(ok=True, fidelity=Fidelity.EXACT)
 
-        result = apply_span_edit(self._doc.page(index), span, runs, block_spans)
+        result = apply_span_edit(
+            self._doc.page(index), span, runs, block_spans,
+            override_size=size, override_color=color,
+        )
         if not result.ok:
             self._undo.pop()
         return result
@@ -155,6 +168,63 @@ class Controller:
         if not result.ok:
             self._undo.pop()
         return result
+
+    def insert_text(self, index: int, rect, text: str, *,
+                    font_name: str = "helv", size: float = 12.0,
+                    color=(0.0, 0.0, 0.0)) -> EditResult:
+        """Insert a NEW text box at ``rect`` (PDF points). Undoable."""
+        assert self._doc is not None
+        self._snapshot()
+        result = _insert_text_box(
+            self._doc.page(index), rect, text,
+            font_name=font_name, size=size, color=color,
+        )
+        if not result.ok:
+            self._undo.pop()
+        return result
+
+    # -- find / replace -------------------------------------------------
+
+    def find(self, index: int, query: str, case_sensitive: bool = False) -> list[Match]:
+        """Matches of ``query`` within the editable spans on a page."""
+        return find_spans(self.spans(index), query, case_sensitive)
+
+    def replace_in_span(self, index: int, match: Match, replacement: str) -> EditResult:
+        """Replace a single matched region (within its span) via the edit path."""
+        span = match.span
+        new_text = span.text[:match.start] + replacement + span.text[match.end:]
+        return self.edit_span(index, span, new_text)
+
+    def replace_all_in_page(self, index: int, query: str, replacement: str,
+                            case_sensitive: bool = False) -> int:
+        """Replace every occurrence of ``query`` on a page. Returns the count.
+
+        Re-extracts spans each iteration (an edit may reload the document) and
+        keys progress by span origin, so it terminates even when ``replacement``
+        itself contains ``query``.
+        """
+        if not query:
+            return 0
+        total = 0
+        processed: set[tuple[float, float]] = set()
+        while True:
+            target = None
+            for s in self.spans(index):
+                key = (round(s.origin[0], 1), round(s.origin[1], 1))
+                if key in processed:
+                    continue
+                if count_occurrences(s.text, query, case_sensitive) > 0:
+                    target = s
+                    break
+            if target is None:
+                break
+            n = count_occurrences(target.text, query, case_sensitive)
+            new_text = replace_occurrences(target.text, query, replacement, case_sensitive)
+            result = self.edit_span(index, target, new_text)
+            processed.add((round(target.origin[0], 1), round(target.origin[1], 1)))
+            if result.ok:
+                total += n
+        return total
 
     def _occurrence(self, index: int, span: Span) -> int:
         """How many editable spans with the same text precede ``span`` on the page."""

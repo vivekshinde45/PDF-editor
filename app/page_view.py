@@ -24,6 +24,8 @@ class PageView(QWidget):
     span_moved = Signal(object, float, float)
     # emits the selected Span when the user presses Delete/Backspace
     delete_requested = Signal(object)
+    # emits (x_points, y_points) for a click while in "add text" mode
+    insert_requested = Signal(float, float)
 
     # Drag must exceed this many screen pixels to count as a move (vs. a click).
     _DRAG_THRESHOLD = 3.0
@@ -39,6 +41,7 @@ class PageView(QWidget):
         self._selected_block: TextBlock | None = None
         self._press_pos = None        # QPointF where a press began (screen px)
         self._drag_offset = None      # QPointF live drag delta (screen px)
+        self._add_mode = False        # "add text" tool: clicks place a new box
         self.setMinimumSize(400, 500)
         self.setMouseTracking(True)
         # Accept keyboard focus so arrow keys can nudge the selected span.
@@ -47,6 +50,11 @@ class PageView(QWidget):
     @property
     def spans(self) -> list[Span]:
         return self._spans
+
+    def set_add_text_mode(self, on: bool) -> None:
+        """In add-text mode, a click emits insert_requested instead of selecting."""
+        self._add_mode = on
+        self.setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
 
     def select(self, span: Span | None) -> None:
         """Programmatically select a span (e.g. to re-select after a move)."""
@@ -133,6 +141,10 @@ class PageView(QWidget):
         if self._pixmap is None:
             return
         pos = event.position()
+        if self._add_mode:
+            # Place a new text box here; map screen px → PDF points.
+            self.insert_requested.emit(pos.x() / self._scale, pos.y() / self._scale)
+            return
         hit = None
         # Smallest matching span wins, so dense rows are easy to target.
         best_area = None

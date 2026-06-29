@@ -213,6 +213,73 @@ def test_edit_on_second_page_via_ui(qapp, multipage_pdf):
     assert "EDITED" not in win.ctrl.page_text(0)
 
 
+def test_find_button_selects_match(qapp, simple_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(simple_pdf)
+    win._load_page()
+    win._refresh_actions()
+
+    win.find_field.setText("12345")
+    win._on_find()
+    assert win.view.selected is not None
+    assert "12345" in win.view.selected.text
+
+
+def test_replace_all_button_replaces(qapp, simple_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(simple_pdf)
+    win._load_page()
+
+    win.find_field.setText("12345")
+    win.replace_field.setText("99999")
+    win._on_replace_all()
+    assert "99999" in win.ctrl.page_text(0)
+    assert "12345" not in win.ctrl.page_text(0)
+
+
+def test_size_and_color_edit_applies(qapp, simple_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(simple_pdf)
+    win._load_page()
+
+    target = next(s for s in win.ctrl.spans(0) if "12345" in s.text)
+    win.view.select(target)
+    win._on_span_clicked(target)
+
+    win.size_spin.setValue(28.0)
+    win._sel_color = (1.0, 0.0, 0.0)
+    win.edit.setPlainText("Recolored bigger")
+    win._on_apply()
+
+    sp = next(s for s in win.ctrl.spans(0) if "Recolored" in s.text)
+    assert sp.size > target.size  # size override took effect
+
+
+def test_add_text_inserts_on_canvas_click(qapp, simple_pdf, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(simple_pdf)
+    win._load_page()
+
+    # Stub the text prompt the canvas click would raise.
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("Freshly added", True)))
+    win.btn_add_text.setChecked(True)
+    win._on_insert_text(72.0, 600.0)  # simulate a canvas click in PDF points
+
+    assert "Freshly added" in win.ctrl.page_text(0)
+    assert not win.btn_add_text.isChecked()  # mode auto-exits after placing
+
+
 def test_extract_runs_captures_bold(qapp, simple_pdf):
     from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor
 

@@ -81,6 +81,52 @@ def test_each_page_renders_and_reads_independently(multipage_pdf):
         assert rendered.width > 0 and rendered.height > 0
 
 
+def test_find_via_controller(simple_pdf):
+    ctrl = Controller()
+    ctrl.open(simple_pdf)
+    hits = ctrl.find(0, "12345")
+    assert len(hits) == 1
+    assert hits[0].span.text[hits[0].start:hits[0].end] == "12345"
+
+
+def test_replace_in_span(simple_pdf):
+    ctrl = Controller()
+    ctrl.open(simple_pdf)
+    match = ctrl.find(0, "12345")[0]
+    result = ctrl.replace_in_span(0, match, "99999")
+    assert result.ok
+    full = ctrl.page_text(0)
+    assert "99999" in full
+    assert "12345" not in full
+
+
+def test_replace_all_in_page_counts_and_terminates(simple_pdf):
+    ctrl = Controller()
+    ctrl.open(simple_pdf)
+    # "number" appears once; replacing with text that contains it must still
+    # terminate (origin-keyed progress guard).
+    count = ctrl.replace_all_in_page(0, "number", "number-NO")
+    assert count >= 1
+    assert "number-NO" in ctrl.page_text(0)
+
+
+def test_replace_all_no_match_returns_zero(simple_pdf):
+    ctrl = Controller()
+    ctrl.open(simple_pdf)
+    assert ctrl.replace_all_in_page(0, "zzzzz", "x") == 0
+
+
+def test_insert_text_via_controller_is_undoable(simple_pdf):
+    ctrl = Controller()
+    ctrl.open(simple_pdf)
+    result = ctrl.insert_text(0, (72, 600, 400, 660), "Inserted via controller")
+    assert result.ok
+    assert "Inserted via controller" in ctrl.page_text(0)
+    assert ctrl.can_undo()
+    ctrl.undo()
+    assert "Inserted via controller" not in ctrl.page_text(0)
+
+
 def test_edit_targets_only_its_own_page(multipage_pdf):
     ctrl = Controller()
     ctrl.open(multipage_pdf)

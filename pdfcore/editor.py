@@ -141,7 +141,9 @@ _COLUMN_GAP = 2.0
 
 
 def apply_span_edit(
-    page: fitz.Page, span: Span, new_text_or_runs, block_spans: list[Span] | None = None
+    page: fitz.Page, span: Span, new_text_or_runs, block_spans: list[Span] | None = None,
+    override_size: float | None = None,
+    override_color: tuple[float, float, float] | None = None,
 ) -> EditResult:
     """Edit a single span at its original position, reflowing the rest of its line.
 
@@ -152,10 +154,15 @@ def apply_span_edit(
     Shifting STOPS at a column-sized gap: content that sits after a wide gap is a
     separate column and stays put, so table alignment is preserved. With no
     ``block_spans`` (or none following), this is a pure in-place edit.
+
+    ``override_size`` / ``override_color`` change only the EDITED span's font
+    size / colour; following spans keep their own. Both default to the span's own
+    values, so callers that pass nothing get byte-identical v1 behaviour.
     """
     runs = _normalize_runs(new_text_or_runs) or [("", False, False)]
     text = _full_text(runs)
-    size = span.size
+    size = override_size if override_size is not None else span.size
+    color = override_color if override_color is not None else span.color
 
     buffer, fontname, measure_font, substituted = _choose_font(page, span.font_name, text)
     new_width = _measure_width(measure_font, runs, size)
@@ -182,7 +189,7 @@ def apply_span_edit(
         page.insert_font(fontname=fontname, fontbuffer=buffer)
     edited_end = _draw_line(
         page, span.origin[0], span.origin[1], runs, fontname, measure_font,
-        size, span.color, span.bold, span.italic,
+        size, color, span.bold, span.italic,
     )
 
     rightmost = edited_end
