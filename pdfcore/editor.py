@@ -258,6 +258,56 @@ def move_span(page: fitz.Page, span: Span, dx: float, dy: float) -> EditResult:
     return EditResult(ok=True, fidelity=Fidelity.EXACT)
 
 
+def delete_span(page: fitz.Page, span: Span) -> EditResult:
+    """Delete ``span``'s text: redact its rectangle and draw nothing.
+
+    Uses the same no-fill redaction as the edit path, so backgrounds/graphics
+    under the text are preserved (only the glyphs are removed). Other content on
+    the page is untouched.
+    """
+    page.add_redact_annot(fitz.Rect(*span.bbox), fill=False, cross_out=False)
+    page.apply_redactions(images=0, graphics=0)
+    return EditResult(ok=True, fidelity=Fidelity.EXACT)
+
+
+def duplicate_span(page: fitz.Page, span: Span, dx: float, dy: float) -> EditResult:
+    """Draw a second copy of ``span`` offset by ``(dx, dy)`` points.
+
+    The original is left in place (no redaction); the copy reuses the original
+    embedded font, size, weight and colour. Positive dx/dy offset right/down.
+    """
+    runs = [(span.text, span.bold, span.italic)]
+    buffer, fontname, measure_font, substituted = _choose_font(page, span.font_name, span.text)
+    # No redaction here, so the font can be registered before drawing.
+    if buffer is not None:
+        page.insert_font(fontname=fontname, fontbuffer=buffer)
+
+    new_x = span.origin[0] + dx
+    new_y = span.origin[1] + dy
+    end = _draw_line(
+        page, new_x, new_y, runs, fontname, measure_font,
+        span.size, span.color, span.bold, span.italic,
+    )
+
+    if (new_x < _PADDING or new_y - span.size < 0
+            or end > page.rect.x1 - _PADDING or new_y > page.rect.y1 - _PADDING):
+        return EditResult(
+            ok=True,
+            fidelity=Fidelity.OVERFLOW,
+            message="Duplicated text lands outside the page bounds.",
+        )
+    if substituted:
+        return EditResult(
+            ok=True,
+            fidelity=Fidelity.FONT_SUBSTITUTED,
+            message=(
+                f"Original font '{span.font_name}' wasn't reusable; a similar "
+                f"standard font was used for the copy."
+            ),
+        )
+    return EditResult(ok=True, fidelity=Fidelity.EXACT)
+
+
 def _reg_name(font_name: str) -> str:
     return "ed" + re.sub(r"[^a-z0-9]", "", font_name.lower())[:18] or "edfont"
 

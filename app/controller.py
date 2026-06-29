@@ -12,6 +12,8 @@ import fitz
 from pdfcore.blocks import Span, TextBlock, extract_blocks
 from pdfcore.document import PdfDocument
 from pdfcore.editor import EditResult, Fidelity, apply_edit, apply_span_edit
+from pdfcore.editor import delete_span as _delete_span
+from pdfcore.editor import duplicate_span as _duplicate_span
 from pdfcore.editor import move_span as _move_span
 from pdfcore.surgical import surgical_replace
 
@@ -33,6 +35,7 @@ class Controller:
     def __init__(self) -> None:
         self._doc: PdfDocument | None = None
         self._undo: list[bytes] = []
+        self._redo: list[bytes] = []
 
     # -- lifecycle ------------------------------------------------------
 
@@ -53,12 +56,14 @@ class Controller:
             self._doc.close()
         self._doc = PdfDocument.open(path, password)
         self._undo.clear()
+        self._redo.clear()
 
     def close(self) -> None:
         if self._doc is not None:
             self._doc.close()
             self._doc = None
         self._undo.clear()
+        self._redo.clear()
 
     # -- read -----------------------------------------------------------
 
@@ -73,6 +78,11 @@ class Controller:
     def spans(self, index: int) -> list[Span]:
         """All editable spans on a page (the span-level edit targets)."""
         return [s for b in self.blocks(index) if b.editable for s in b.spans]
+
+    def page_text(self, index: int) -> str:
+        """The page's full text in reading order (for copy / export)."""
+        assert self._doc is not None
+        return self._doc.page(index).get_text("text")
 
     # -- edit -----------------------------------------------------------
 
@@ -127,6 +137,25 @@ class Controller:
             self._undo.pop()
         return result
 
+    def delete_span(self, index: int, span: Span) -> EditResult:
+        """Delete a span's text (redact only). Undoable."""
+        assert self._doc is not None
+        self._snapshot()
+        result = _delete_span(self._doc.page(index), span)
+        if not result.ok:
+            self._undo.pop()
+        return result
+
+    def duplicate_span(self, index: int, span: Span,
+                       dx: float = 8.0, dy: float = 12.0) -> EditResult:
+        """Draw a second copy of a span, offset by (dx, dy) points. Undoable."""
+        assert self._doc is not None
+        self._snapshot()
+        result = _duplicate_span(self._doc.page(index), span, dx, dy)
+        if not result.ok:
+            self._undo.pop()
+        return result
+
     def _occurrence(self, index: int, span: Span) -> int:
         """How many editable spans with the same text precede ``span`` on the page."""
         count = 0
@@ -149,16 +178,22 @@ class Controller:
     def can_undo(self) -> bool:
         return bool(self._undo)
 
-    def undo(self) -> None:
-        if not self._undo:
-            return
-        import fitz
+    def can_redo(self) -> bool:
+        return bool(self._redo)
 
-        data = self._undo.pop()
-        path = self._doc.path if self._doc else None
-        if self._doc is not None:
-            self._doc.close()
-        self._doc = PdfDocument(fitz.open(stream=data, filetype="pdf"), path)
+    def undo(self) -> None:
+        if not self._undo or self._doc is None:
+            return
+        # Save the current state so redo can return to it, then revert.
+        self._redo.append(self._doc.fitz_doc.tobytes())
+        self._reload(self._undo.pop())
+
+    def redo(self) -> None:
+        if not self._redo or self._doc is None:
+            return
+        # Save the current state for undo, then re-apply the redone state.
+        self._undo.append(self._doc.fitz_doc.tobytes())
+        self._reload(self._redo.pop())
 
     # -- save -----------------------------------------------------------
 
@@ -169,6 +204,10 @@ class Controller:
     # -- internals ------------------------------------------------------
 
     def _snapshot(self) -> None:
-        """Push a full copy of the current document onto the undo stack."""
+        """Push a full copy of the current document onto the undo stack.
+
+        A new edit invalidates the redo history (standard undo/redo semantics).
+        """
         assert self._doc is not None
         self._undo.append(self._doc.fitz_doc.tobytes())
+        self._redo.clear()

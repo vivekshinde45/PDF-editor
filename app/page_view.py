@@ -22,6 +22,8 @@ class PageView(QWidget):
     span_clicked = Signal(object)  # emits a Span or None
     # emits (Span, dx_points, dy_points) when the user moves the selected span
     span_moved = Signal(object, float, float)
+    # emits the selected Span when the user presses Delete/Backspace
+    delete_requested = Signal(object)
 
     # Drag must exceed this many screen pixels to count as a move (vs. a click).
     _DRAG_THRESHOLD = 3.0
@@ -178,6 +180,9 @@ class PageView(QWidget):
         """Arrow keys nudge the selected span (Shift = a larger 10pt step)."""
         if self._selected is None:
             return super().keyPressEvent(event)
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_requested.emit(self._selected)
+            return
         step = 10.0 if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) else 1.0
         delta = {
             Qt.Key.Key_Left: (-step, 0.0),

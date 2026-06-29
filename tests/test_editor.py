@@ -225,6 +225,61 @@ def test_unchanged_text_edit_leaves_neighbour_in_place():
     doc.close()
 
 
+def test_delete_span_removes_text(simple_pdf):
+    from pdfcore.editor import delete_span
+
+    with PdfDocument.open(simple_pdf) as doc:
+        block = _first_block_with(doc, "Invoice number 12345")
+        result = delete_span(doc.page(0), block.spans[0])
+        assert result.ok
+        full = " ".join(b.text for b in extract_blocks(doc.page(0)) if b.editable)
+        assert "12345" not in full
+        # The other block's text must survive.
+        assert "business" in full.lower()
+
+
+def test_delete_preserves_background_graphics(graphics_pdf):
+    """Deleting text over a colored band must not stamp a white patch."""
+    from pdfcore.editor import delete_span
+
+    with PdfDocument.open(graphics_pdf) as doc:
+        before = _nonwhite_pixel_count(doc.page(0))
+        block = _first_block_with(doc, "Header on blue band")
+        result = delete_span(doc.page(0), block.spans[0])
+        assert result.ok
+        after = _nonwhite_pixel_count(doc.page(0))
+    # The colored band/box dominate; a white redaction box would erase them.
+    assert after > before * 0.9
+
+
+def test_duplicate_span_creates_second_copy(simple_pdf):
+    from pdfcore.editor import duplicate_span
+
+    with PdfDocument.open(simple_pdf) as doc:
+        block = _first_block_with(doc, "Invoice number 12345")
+        span = block.spans[0]
+        result = duplicate_span(doc.page(0), span, 0.0, 40.0)
+        assert result.ok
+        # Two spans now contain the duplicated number.
+        copies = [s for b in extract_blocks(doc.page(0)) if b.editable
+                  for s in b.spans if "12345" in s.text]
+        assert len(copies) == 2
+        # Original untouched, copy offset downward by ~40pt.
+        ys = sorted(s.origin[1] for s in copies)
+        assert abs((ys[1] - ys[0]) - 40.0) < 3.0
+
+
+def test_duplicate_off_page_flags_overflow(simple_pdf):
+    from pdfcore.editor import Fidelity as F
+    from pdfcore.editor import duplicate_span
+
+    with PdfDocument.open(simple_pdf) as doc:
+        block = _first_block_with(doc, "Invoice number 12345")
+        result = duplicate_span(doc.page(0), block.spans[0], 0.0, 5000.0)
+        assert result.ok
+        assert result.fidelity == F.OVERFLOW
+
+
 def test_font_resolution_flags_substitution():
     # A subsetted embedded font name → substituted.
     assert resolve_font("ABCDEF+CustomFont").substituted is True

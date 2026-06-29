@@ -86,6 +86,63 @@ def test_move_span_relocates_and_reselects(qapp, simple_pdf):
     assert win.view.selected is not None and "12345" in win.view.selected.text
 
 
+def test_delete_button_removes_selected_span(qapp, simple_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(simple_pdf)
+    win._load_page()
+    win._refresh_actions()
+
+    target = next(s for s in win.ctrl.spans(0) if "12345" in s.text)
+    win.view.select(target)
+    win._on_span_clicked(target)
+    assert win.btn_delete.isEnabled()
+
+    win._on_delete()
+    full = " ".join(s.text for s in win.ctrl.spans(0))
+    assert "12345" not in full
+    assert win.ctrl.can_undo()
+
+
+def test_redo_button_state_tracks_history(qapp, simple_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(simple_pdf)
+    win._load_page()
+    win._refresh_actions()
+    assert not win.btn_redo.isEnabled()
+
+    target = next(s for s in win.ctrl.spans(0) if "12345" in s.text)
+    win.view.select(target)
+    win.edit.setPlainText("Invoice number 99999")
+    win._on_apply()
+
+    win._on_undo()
+    assert win.btn_redo.isEnabled()
+    win._on_redo()
+    assert not win.btn_redo.isEnabled()
+    assert "99999" in " ".join(s.text for s in win.ctrl.spans(0))
+
+
+def test_copy_button_puts_text_on_clipboard(qapp, simple_pdf):
+    from PySide6.QtGui import QGuiApplication
+
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(simple_pdf)
+    win._load_page()
+
+    target = next(s for s in win.ctrl.spans(0) if "12345" in s.text)
+    win.view.select(target)
+    win._on_span_clicked(target)
+    win._on_copy()
+
+    assert "12345" in QGuiApplication.clipboard().text()
+
+
 def test_extract_runs_captures_bold(qapp, simple_pdf):
     from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor
 

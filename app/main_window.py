@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QFont, QGuiApplication, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -58,12 +58,15 @@ class MainWindow(QMainWindow):
         self.btn_save.clicked.connect(self._on_save)
         self.btn_undo = QPushButton("Undo")
         self.btn_undo.clicked.connect(self._on_undo)
+        self.btn_redo = QPushButton("Redo")
+        self.btn_redo.clicked.connect(self._on_redo)
         self.page_spin = QSpinBox()
         self.page_spin.setMinimum(1)
         self.page_spin.valueChanged.connect(self._on_page_changed)
         bar.addWidget(self.btn_open)
         bar.addWidget(self.btn_save)
         bar.addWidget(self.btn_undo)
+        bar.addWidget(self.btn_redo)
         bar.addStretch(1)
         bar.addWidget(QLabel("Page"))
         bar.addWidget(self.page_spin)
@@ -72,6 +75,7 @@ class MainWindow(QMainWindow):
         self.view = PageView()
         self.view.span_clicked.connect(self._on_span_clicked)
         self.view.span_moved.connect(self._on_span_moved)
+        self.view.delete_requested.connect(self._on_delete)
         scroll = QScrollArea()
         scroll.setWidget(self.view)
         scroll.setWidgetResizable(False)
@@ -133,6 +137,21 @@ class MainWindow(QMainWindow):
         self.btn_apply.clicked.connect(self._on_apply)
         v.addWidget(self.btn_apply)
 
+        # Span actions: delete, duplicate, copy text.
+        actions = QHBoxLayout()
+        self.btn_delete = QPushButton("Delete")
+        self.btn_delete.setToolTip("Delete the selected text (or press Delete)")
+        self.btn_delete.clicked.connect(self._on_delete)
+        self.btn_duplicate = QPushButton("Duplicate")
+        self.btn_duplicate.setToolTip("Place a copy of the selected text nearby")
+        self.btn_duplicate.clicked.connect(self._on_duplicate)
+        self.btn_copy = QPushButton("Copy")
+        self.btn_copy.setToolTip("Copy the selected text to the clipboard")
+        self.btn_copy.clicked.connect(self._on_copy)
+        for b in (self.btn_delete, self.btn_duplicate, self.btn_copy):
+            actions.addWidget(b)
+        v.addLayout(actions)
+
         self.lbl_status = QLabel("")
         self.lbl_status.setWordWrap(True)
         v.addWidget(self.lbl_status)
@@ -188,6 +207,47 @@ class MainWindow(QMainWindow):
             self._refresh_actions()
             self._status("Reverted last edit.")
 
+    def _on_redo(self) -> None:
+        if self.ctrl.can_redo():
+            self.ctrl.redo()
+            self._load_page()
+            self._refresh_actions()
+            self._status("Reapplied edit.")
+
+    def _on_delete(self) -> None:
+        span = self.view.selected
+        if span is None or not self.ctrl.is_open:
+            return
+        result = self.ctrl.delete_span(self._page_index, span)
+        if not result.ok:
+            self._error(result.message or "Delete failed.")
+            return
+        self._load_page()
+        self._refresh_actions()
+        self._status("Deleted.", ok=True)
+
+    def _on_duplicate(self) -> None:
+        span = self.view.selected
+        if span is None or not self.ctrl.is_open:
+            return
+        result = self.ctrl.duplicate_span(self._page_index, span)
+        if not result.ok:
+            self._error(result.message or "Duplicate failed.")
+            return
+        self._load_page()
+        self._refresh_actions()
+        if result.fidelity == Fidelity.EXACT:
+            self._status("Duplicated.", ok=True)
+        else:
+            self._status(f"⚠ {result.message}")
+
+    def _on_copy(self) -> None:
+        span = self.view.selected
+        if span is None:
+            return
+        QGuiApplication.clipboard().setText(span.text)
+        self._status("Copied text to clipboard.", ok=True)
+
     def _on_page_changed(self, value: int) -> None:
         if not self.ctrl.is_open:
             return
@@ -208,6 +268,9 @@ class MainWindow(QMainWindow):
         self.btn_bold.setEnabled(True)
         self.btn_italic.setEnabled(True)
         self.btn_apply.setEnabled(True)
+        self.btn_delete.setEnabled(True)
+        self.btn_duplicate.setEnabled(True)
+        self.btn_copy.setEnabled(True)
         self._status(
             "Edit in place keeps the layout. Drag the box (or use arrow keys; "
             "Shift = 10pt) to move this text."
@@ -332,12 +395,16 @@ class MainWindow(QMainWindow):
         self.btn_italic.setChecked(False)
         self.btn_italic.setEnabled(False)
         self.btn_apply.setEnabled(False)
+        self.btn_delete.setEnabled(False)
+        self.btn_duplicate.setEnabled(False)
+        self.btn_copy.setEnabled(False)
 
     def _refresh_actions(self) -> None:
         is_open = self.ctrl.is_open
         self.btn_save.setEnabled(is_open)
         self.page_spin.setEnabled(is_open)
         self.btn_undo.setEnabled(is_open and self.ctrl.can_undo())
+        self.btn_redo.setEnabled(is_open and self.ctrl.can_redo())
 
     def _status(self, text: str, ok: bool = False) -> None:
         color = "#1d9e75" if ok else "#8a6d00"

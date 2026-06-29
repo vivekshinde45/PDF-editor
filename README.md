@@ -27,8 +27,12 @@ text-based (digitally generated) PDFs. See the design spec at
 - **Move a selected span**: drag its box on the page, or nudge it with the
   arrow keys (hold **Shift** for a 10 pt step). A ghost outline previews where
   it will land; the text is re-rendered at the new position in its original font.
+- **Delete** the selected text (the **Delete** key, or the Delete button) —
+  removes the glyphs without disturbing backgrounds underneath.
+- **Duplicate** the selected text: places a copy nearby in the same font.
+- **Copy** the selected text to the clipboard.
 - Save a copy (the original file is never overwritten).
-- Undo (every edit and move is undoable).
+- **Undo and Redo** (every edit, move, delete and duplicate is reversible).
 
 ## What it does NOT do (v1)
 
