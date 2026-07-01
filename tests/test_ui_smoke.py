@@ -164,6 +164,33 @@ def test_navigation_changes_current_page(qapp, multipage_pdf):
     assert win._page_index == 2
 
 
+def test_delete_page_button_removes_current_page(qapp, multipage_pdf, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(multipage_pdf)
+    win.page_spin.setMaximum(win.ctrl.page_count)
+    win.thumbs.populate(win.ctrl)
+    win.page_spin.setValue(2)
+    win._load_page()
+    win._refresh_actions()
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+    )
+    win._on_delete_page()
+
+    assert win.ctrl.page_count == 2
+    assert win.page_spin.maximum() == 2
+    assert win.lbl_page_count.text() == "/ 2"
+    assert "Page marker 3" in win.ctrl.page_text(1)
+    assert win.ctrl.can_undo()
+
+
 def test_thumbnail_click_navigates(qapp, multipage_pdf):
     from app.main_window import MainWindow
 
@@ -278,6 +305,49 @@ def test_add_text_inserts_on_canvas_click(qapp, simple_pdf, monkeypatch):
 
     assert "Freshly added" in win.ctrl.page_text(0)
     assert not win.btn_add_text.isChecked()  # mode auto-exits after placing
+
+
+def test_signature_select_move_delete_cycle(qapp, signature_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(signature_pdf)
+    win._load_page()
+    win._refresh_actions()
+
+    sig = win.ctrl.signatures(0)[0]
+    win.view.select_signature(sig)
+    win._on_signature_clicked(sig)
+    assert win.btn_delete.isEnabled()
+    assert win.btn_duplicate.isEnabled()
+    assert win.btn_replace_signature.isEnabled()
+    assert win.btn_apply.isEnabled()
+
+    win._on_signature_moved(sig, 20.0, 15.0)
+    moved = win.ctrl.signatures(0)[0]
+    assert abs(moved.bbox[0] - (sig.bbox[0] + 20.0)) < 1.0
+    assert win.ctrl.can_undo()
+
+    win._on_delete()
+    assert win.ctrl.signatures(0) == []
+
+
+def test_signature_size_apply_resizes(qapp, signature_pdf):
+    from app.main_window import MainWindow
+
+    win = MainWindow()
+    win.ctrl.open(signature_pdf)
+    win._load_page()
+
+    sig = win.ctrl.signatures(0)[0]
+    win.view.select_signature(sig)
+    win._on_signature_clicked(sig)
+    win.size_spin.setValue(260.0)
+    win._on_apply()
+
+    resized = win.ctrl.signatures(0)[0]
+    assert abs((resized.bbox[2] - resized.bbox[0]) - 260.0) < 1.0
+    assert win.ctrl.can_undo()
 
 
 def test_extract_runs_captures_bold(qapp, simple_pdf):

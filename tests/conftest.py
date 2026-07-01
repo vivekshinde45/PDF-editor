@@ -169,3 +169,29 @@ def empty_pdf(tmp_path):
     doc.save(str(path))
     doc.close()
     return str(path)
+
+
+@pytest.fixture()
+def signature_image(tmp_path):
+    """A small transparent PNG shaped like a signature stroke."""
+    from PIL import Image, ImageDraw
+
+    path = tmp_path / "signature.png"
+    image = Image.new("RGBA", (120, 40), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(image)
+    draw.line((8, 28, 36, 16, 62, 26, 112, 10), fill=(0, 0, 0, 255), width=4)
+    image.save(path)
+    return str(path)
+
+
+@pytest.fixture()
+def signature_pdf(tmp_path, signature_image):
+    """A PDF containing text plus a raster signature image."""
+    path = tmp_path / "signed.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=220)
+    page.insert_text((40, 60), "Agreement", fontname="helv", fontsize=14)
+    page.insert_image(fitz.Rect(80, 120, 200, 160), filename=signature_image)
+    doc.save(str(path))
+    doc.close()
+    return str(path)

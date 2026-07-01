@@ -39,15 +39,19 @@ text-based (digitally generated) PDFs. See the design spec at
   removes the glyphs without disturbing backgrounds underneath.
 - **Duplicate** the selected text: places a copy nearby in the same font.
 - **Copy** the selected text to the clipboard.
+- **Edit signature images**: select raster signature/image blocks, drag or nudge
+  them, delete, duplicate, replace from an image file, or add a new signature
+  image from the toolbar.
 - Save a copy (the original file is never overwritten).
 - **Undo and Redo** (every edit, move, delete and duplicate is reversible).
+- **Delete the current page** from multi-page PDFs, with undo support.
 
 ## What it does NOT do (v1)
 
-Insert new text boxes, edit/move images, vector editing, OCR / scanned PDFs,
-PDF→LaTeX, underline, font-size/color changes, annotations, forms, page
-operations (merge/split/reorder). These are deferred. Note: **underline** is not
-a font attribute in PDF (it's a drawn line), so it isn't detected or applied.
+Vector editing, OCR / scanned PDFs, PDF→LaTeX, underline, annotations, forms,
+page merge/split/reorder, or cryptographic digital-signature validation. These
+are deferred. Note: **underline** is not a font attribute in PDF (it's a drawn
+line), so it isn't detected or applied.
 
 ## Setup
 
@@ -94,6 +98,7 @@ app/  (PySide6 GUI)        ──depends on──▶  pdfcore/  (Qt-free engine)
 main.py           entry point                 surgical.py   content-stream edit
                                               search.py     find / replace
                                               insert.py     add new text box
+                                              images.py     signature images
 ```
 
 `pdfcore` has no Qt imports, so the engine is unit-tested directly.

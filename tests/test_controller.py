@@ -138,3 +138,30 @@ def test_edit_targets_only_its_own_page(multipage_pdf):
     assert "marker 1" in ctrl.page_text(0)
     assert "EDITED" not in ctrl.page_text(0)
     assert "marker 3" in ctrl.page_text(2)
+
+
+def test_delete_page_then_undo_restores(multipage_pdf):
+    ctrl = Controller()
+    ctrl.open(multipage_pdf)
+
+    ctrl.delete_page(1)
+    assert ctrl.page_count == 2
+    assert "Page marker 1" in ctrl.page_text(0)
+    assert "Page marker 3" in ctrl.page_text(1)
+    assert ctrl.can_undo()
+
+    ctrl.undo()
+    assert ctrl.page_count == 3
+    assert "Page marker 2" in ctrl.page_text(1)
+
+
+def test_delete_only_page_rejected(simple_pdf):
+    ctrl = Controller()
+    ctrl.open(simple_pdf)
+
+    try:
+        ctrl.delete_page(0)
+    except ValueError as exc:
+        assert "only page" in str(exc)
+    else:
+        raise AssertionError("delete_page should reject a one-page document")

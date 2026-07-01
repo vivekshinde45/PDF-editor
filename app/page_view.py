@@ -16,6 +16,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from pdfcore.blocks import Span, TextBlock
+from pdfcore.images import SignatureImage
 
 
 class PageView(QWidget):
@@ -26,6 +27,11 @@ class PageView(QWidget):
     delete_requested = Signal(object)
     # emits (x_points, y_points) for a click while in "add text" mode
     insert_requested = Signal(float, float)
+    # emits selected signature image or None
+    signature_clicked = Signal(object)
+    signature_moved = Signal(object, float, float)
+    # emits (x_points, y_points) for a click while in "add signature" mode
+    signature_insert_requested = Signal(float, float)
 
     # Drag must exceed this many screen pixels to count as a move (vs. a click).
     _DRAG_THRESHOLD = 3.0
@@ -35,13 +41,16 @@ class PageView(QWidget):
         self._pixmap: QPixmap | None = None
         self._blocks: list[TextBlock] = []
         self._spans: list[Span] = []
+        self._signatures: list[SignatureImage] = []
         self._span_block: dict[int, TextBlock] = {}
         self._scale: float = 1.0
         self._selected: Span | None = None
+        self._selected_signature: SignatureImage | None = None
         self._selected_block: TextBlock | None = None
         self._press_pos = None        # QPointF where a press began (screen px)
         self._drag_offset = None      # QPointF live drag delta (screen px)
         self._add_mode = False        # "add text" tool: clicks place a new box
+        self._add_signature_mode = False
         self.setMinimumSize(400, 500)
         self.setMouseTracking(True)
         # Accept keyboard focus so arrow keys can nudge the selected span.
@@ -51,18 +60,40 @@ class PageView(QWidget):
     def spans(self) -> list[Span]:
         return self._spans
 
+    @property
+    def signatures(self) -> list[SignatureImage]:
+        return self._signatures
+
     def set_add_text_mode(self, on: bool) -> None:
         """In add-text mode, a click emits insert_requested instead of selecting."""
         self._add_mode = on
-        self.setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
+        if on:
+            self._add_signature_mode = False
+        self._sync_cursor()
+
+    def set_add_signature_mode(self, on: bool) -> None:
+        """In add-signature mode, a click emits signature_insert_requested."""
+        self._add_signature_mode = on
+        if on:
+            self._add_mode = False
+        self._sync_cursor()
 
     def select(self, span: Span | None) -> None:
         """Programmatically select a span (e.g. to re-select after a move)."""
         self._selected = span
+        self._selected_signature = None
         self._selected_block = self._span_block.get(id(span)) if span else None
         self.update()
 
-    def set_page(self, rendered, blocks: list[TextBlock]) -> None:
+    def select_signature(self, sig: SignatureImage | None) -> None:
+        self._selected = None
+        self._selected_signature = sig
+        self._selected_block = None
+        self.update()
+
+    def set_page(
+        self, rendered, blocks: list[TextBlock], signatures: list[SignatureImage] | None = None
+    ) -> None:
         img = QImage(
             rendered.samples,
             rendered.width,
@@ -73,9 +104,11 @@ class PageView(QWidget):
         self._pixmap = QPixmap.fromImage(img)
         self._blocks = blocks
         self._spans = [s for b in blocks if b.editable for s in b.spans]
+        self._signatures = signatures or []
         self._span_block = {id(s): b for b in blocks if b.editable for s in b.spans}
         self._scale = rendered.scale
         self._selected = None
+        self._selected_signature = None
         self._selected_block = None
         self._press_pos = None
         self._drag_offset = None
@@ -87,11 +120,16 @@ class PageView(QWidget):
         return self._selected
 
     @property
+    def selected_signature(self) -> SignatureImage | None:
+        return self._selected_signature
+
+    @property
     def selected_block(self) -> TextBlock | None:
         return self._selected_block
 
     def clear_selection(self) -> None:
         self._selected = None
+        self._selected_signature = None
         self._selected_block = None
         self.update()
 
@@ -119,10 +157,26 @@ class PageView(QWidget):
                 p.setPen(QPen(QColor(40, 120, 220, 90), 1, Qt.PenStyle.DashLine))
                 p.drawRect(rect)
 
+        # Image/signature targets.
+        for sig in self._signatures:
+            rect = self._rect(sig.bbox)
+            if sig is self._selected_signature:
+                p.setPen(QPen(QColor(20, 150, 95), 2, Qt.PenStyle.SolidLine))
+                p.fillRect(rect, QColor(20, 150, 95, 32))
+                p.drawRect(rect)
+            else:
+                p.setPen(QPen(QColor(20, 150, 95, 110), 1, Qt.PenStyle.DashLine))
+                p.drawRect(rect)
+
         # Drag preview: a "ghost" of the selected span at its prospective drop
         # position, so the move is visible before it's committed.
-        if self._selected is not None and self._drag_offset is not None:
-            ghost = self._rect(self._selected.bbox).translated(
+        selected_box = (
+            self._selected.bbox if self._selected is not None
+            else self._selected_signature.bbox if self._selected_signature is not None
+            else None
+        )
+        if selected_box is not None and self._drag_offset is not None:
+            ghost = self._rect(selected_box).translated(
                 self._drag_offset.x(), self._drag_offset.y()
             )
             p.setPen(QPen(QColor(220, 90, 40), 2, Qt.PenStyle.SolidLine))
@@ -145,7 +199,11 @@ class PageView(QWidget):
             # Place a new text box here; map screen px → PDF points.
             self.insert_requested.emit(pos.x() / self._scale, pos.y() / self._scale)
             return
+        if self._add_signature_mode:
+            self.signature_insert_requested.emit(pos.x() / self._scale, pos.y() / self._scale)
+            return
         hit = None
+        hit_sig = None
         # Smallest matching span wins, so dense rows are easy to target.
         best_area = None
         for span in self._spans:
@@ -154,17 +212,27 @@ class PageView(QWidget):
                 area = r.width() * r.height()
                 if best_area is None or area < best_area:
                     best_area, hit = area, span
+        for sig in self._signatures:
+            r = self._rect(sig.bbox)
+            if r.contains(pos):
+                area = r.width() * r.height()
+                if best_area is None or area < best_area:
+                    best_area, hit, hit_sig = area, None, sig
         self._selected = hit
+        self._selected_signature = hit_sig
         self._selected_block = self._span_block.get(id(hit)) if hit else None
-        self._press_pos = pos if hit is not None else None
+        self._press_pos = pos if hit is not None or hit_sig is not None else None
         self._drag_offset = None
         self.setFocus()  # so arrow keys nudge this selection
         self.update()
         self.span_clicked.emit(hit)
+        self.signature_clicked.emit(hit_sig)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         # Track a drag only while the left button is held on a selected span.
-        if self._selected is None or self._press_pos is None:
+        if self._selected is None and self._selected_signature is None:
+            return
+        if self._press_pos is None:
             return
         if not (event.buttons() & Qt.MouseButton.LeftButton):
             return
@@ -177,6 +245,7 @@ class PageView(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         span = self._selected
+        sig = self._selected_signature
         offset = self._drag_offset
         self._press_pos = None
         self._drag_offset = None
@@ -185,15 +254,20 @@ class PageView(QWidget):
             dy = offset.y() / self._scale
             self.update()
             self.span_moved.emit(span, dx, dy)
+        elif sig is not None and offset is not None:
+            dx = offset.x() / self._scale
+            dy = offset.y() / self._scale
+            self.update()
+            self.signature_moved.emit(sig, dx, dy)
         else:
             self.update()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         """Arrow keys nudge the selected span (Shift = a larger 10pt step)."""
-        if self._selected is None:
+        if self._selected is None and self._selected_signature is None:
             return super().keyPressEvent(event)
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-            self.delete_requested.emit(self._selected)
+            self.delete_requested.emit(self._selected or self._selected_signature)
             return
         step = 10.0 if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) else 1.0
         delta = {
@@ -204,4 +278,14 @@ class PageView(QWidget):
         }.get(event.key())
         if delta is None:
             return super().keyPressEvent(event)
-        self.span_moved.emit(self._selected, delta[0], delta[1])
+        if self._selected is not None:
+            self.span_moved.emit(self._selected, delta[0], delta[1])
+        elif self._selected_signature is not None:
+            self.signature_moved.emit(self._selected_signature, delta[0], delta[1])
+
+    def _sync_cursor(self) -> None:
+        self.setCursor(
+            Qt.CursorShape.CrossCursor
+            if self._add_mode or self._add_signature_mode
+            else Qt.CursorShape.ArrowCursor
+        )

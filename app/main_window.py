@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from pdfcore.blocks import Span
 from pdfcore.document import PdfError
 from pdfcore.editor import Fidelity
+from pdfcore.images import SignatureImage
 
 from .controller import Controller
 from .page_view import PageView
@@ -78,6 +79,9 @@ class MainWindow(QMainWindow):
         self.btn_next.setFixedWidth(32)
         self.btn_next.setToolTip("Next page")
         self.btn_next.clicked.connect(self._on_next_page)
+        self.btn_delete_page = QPushButton("Delete page")
+        self.btn_delete_page.setToolTip("Delete the current page")
+        self.btn_delete_page.clicked.connect(self._on_delete_page)
         self.page_spin = QSpinBox()
         self.page_spin.setMinimum(1)
         self.page_spin.valueChanged.connect(self._on_page_changed)
@@ -86,17 +90,23 @@ class MainWindow(QMainWindow):
         self.btn_add_text.setCheckable(True)
         self.btn_add_text.setToolTip("Click on the page to place a new text box")
         self.btn_add_text.toggled.connect(self._on_toggle_add_text)
+        self.btn_add_signature = QPushButton("Add signature")
+        self.btn_add_signature.setCheckable(True)
+        self.btn_add_signature.setToolTip("Click on the page to place a signature image")
+        self.btn_add_signature.toggled.connect(self._on_toggle_add_signature)
         bar.addWidget(self.btn_open)
         bar.addWidget(self.btn_save)
         bar.addWidget(self.btn_undo)
         bar.addWidget(self.btn_redo)
         bar.addWidget(self.btn_add_text)
+        bar.addWidget(self.btn_add_signature)
         bar.addStretch(1)
         bar.addWidget(QLabel("Page"))
         bar.addWidget(self.btn_prev)
         bar.addWidget(self.page_spin)
         bar.addWidget(self.lbl_page_count)
         bar.addWidget(self.btn_next)
+        bar.addWidget(self.btn_delete_page)
         center.addLayout(bar)
 
         # Find / replace row.
@@ -118,9 +128,12 @@ class MainWindow(QMainWindow):
 
         self.view = PageView()
         self.view.span_clicked.connect(self._on_span_clicked)
+        self.view.signature_clicked.connect(self._on_signature_clicked)
         self.view.span_moved.connect(self._on_span_moved)
+        self.view.signature_moved.connect(self._on_signature_moved)
         self.view.delete_requested.connect(self._on_delete)
         self.view.insert_requested.connect(self._on_insert_text)
+        self.view.signature_insert_requested.connect(self._on_insert_signature)
         scroll = QScrollArea()
         scroll.setWidget(self.view)
         scroll.setWidgetResizable(False)
@@ -138,7 +151,7 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         panel.setFixedWidth(280)
         v = QVBoxLayout(panel)
-        v.addWidget(QLabel("<b>Selected text</b>"))
+        v.addWidget(QLabel("<b>Selected item</b>"))
 
         self.lbl_font = QLabel("Font: —")
         self.lbl_size = QLabel("Size: —")
@@ -151,10 +164,10 @@ class MainWindow(QMainWindow):
         style_row = QHBoxLayout()
         style_row.addWidget(QLabel("Size:"))
         self.size_spin = QDoubleSpinBox()
-        self.size_spin.setRange(1.0, 400.0)
+        self.size_spin.setRange(1.0, 1000.0)
         self.size_spin.setSingleStep(0.5)
         self.size_spin.setDecimals(1)
-        self.size_spin.setToolTip("Font size for the selected text")
+        self.size_spin.setToolTip("Font size for text, or width for a selected signature")
         style_row.addWidget(self.size_spin)
         self.btn_color = QPushButton("Color…")
         self.btn_color.setToolTip("Change the colour of the selected text")
@@ -213,6 +226,11 @@ class MainWindow(QMainWindow):
         for b in (self.btn_delete, self.btn_duplicate, self.btn_copy):
             actions.addWidget(b)
         v.addLayout(actions)
+
+        self.btn_replace_signature = QPushButton("Replace signature…")
+        self.btn_replace_signature.setToolTip("Replace the selected signature image")
+        self.btn_replace_signature.clicked.connect(self._on_replace_signature)
+        v.addWidget(self.btn_replace_signature)
 
         self.lbl_status = QLabel("")
         self.lbl_status.setWordWrap(True)
@@ -280,9 +298,15 @@ class MainWindow(QMainWindow):
 
     def _on_delete(self) -> None:
         span = self.view.selected
-        if span is None or not self.ctrl.is_open:
+        sig = self.view.selected_signature
+        if not self.ctrl.is_open:
             return
-        result = self.ctrl.delete_span(self._page_index, span)
+        if span is not None:
+            result = self.ctrl.delete_span(self._page_index, span)
+        elif sig is not None:
+            result = self.ctrl.delete_signature(self._page_index, sig)
+        else:
+            return
         if not result.ok:
             self._error(result.message or "Delete failed.")
             return
@@ -292,9 +316,15 @@ class MainWindow(QMainWindow):
 
     def _on_duplicate(self) -> None:
         span = self.view.selected
-        if span is None or not self.ctrl.is_open:
+        sig = self.view.selected_signature
+        if not self.ctrl.is_open:
             return
-        result = self.ctrl.duplicate_span(self._page_index, span)
+        if span is not None:
+            result = self.ctrl.duplicate_span(self._page_index, span)
+        elif sig is not None:
+            result = self.ctrl.duplicate_signature(self._page_index, sig)
+        else:
+            return
         if not result.ok:
             self._error(result.message or "Duplicate failed.")
             return
@@ -371,6 +401,7 @@ class MainWindow(QMainWindow):
     def _on_toggle_add_text(self, on: bool) -> None:
         self.view.set_add_text_mode(on and self.ctrl.is_open)
         if on:
+            self.btn_add_signature.setChecked(False)
             self._status("Click on the page to place a new text box.")
 
     def _on_insert_text(self, x: float, y: float) -> None:
@@ -394,6 +425,61 @@ class MainWindow(QMainWindow):
         else:
             self._status(f"⚠ {result.message}")
 
+    # -- add / replace signature ---------------------------------------
+
+    def _on_toggle_add_signature(self, on: bool) -> None:
+        self.view.set_add_signature_mode(on and self.ctrl.is_open)
+        if on:
+            self.btn_add_text.setChecked(False)
+            self._status("Click on the page to place a signature image.")
+
+    def _signature_file(self, title: str) -> str | None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            title,
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;All files (*)",
+        )
+        return path or None
+
+    def _on_insert_signature(self, x: float, y: float) -> None:
+        if not self.ctrl.is_open:
+            return
+        self.btn_add_signature.setChecked(False)
+        path = self._signature_file("Choose signature image")
+        if not path:
+            return
+        result = self.ctrl.insert_signature(self._page_index, path, x, y)
+        if not result.ok:
+            self._error(result.message or "Insert signature failed.")
+            return
+        self._load_page()
+        self._refresh_actions()
+        if result.fidelity == Fidelity.EXACT:
+            self._status("Signature inserted.", ok=True)
+        else:
+            self._status(f"⚠ {result.message}")
+
+    def _on_replace_signature(self) -> None:
+        sig = self.view.selected_signature
+        if sig is None or not self.ctrl.is_open:
+            return
+        path = self._signature_file("Choose replacement signature image")
+        if not path:
+            return
+        result = self.ctrl.replace_signature(self._page_index, sig, path)
+        if not result.ok:
+            self._error(result.message or "Replace signature failed.")
+            return
+        old_center = self._center(sig.bbox)
+        self._load_page()
+        replacement = self._find_signature_near(old_center)
+        if replacement is not None:
+            self.view.select_signature(replacement)
+            self._on_signature_clicked(replacement)
+        self._refresh_actions()
+        self._status("Signature replaced.", ok=True)
+
     def _on_page_changed(self, value: int) -> None:
         if not self.ctrl.is_open:
             return
@@ -406,15 +492,46 @@ class MainWindow(QMainWindow):
     def _on_next_page(self) -> None:
         self.page_spin.setValue(self.page_spin.value() + 1)
 
+    def _on_delete_page(self) -> None:
+        if not self.ctrl.is_open or self.ctrl.page_count <= 1:
+            return
+        page_no = self._page_index + 1
+        confirm = QMessageBox.question(
+            self,
+            "Delete page",
+            f"Delete page {page_no}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.ctrl.delete_page(self._page_index)
+        except (IndexError, ValueError) as exc:
+            self._error(str(exc))
+            return
+        self._page_index = min(self._page_index, self.ctrl.page_count - 1)
+        self.page_spin.setMaximum(self.ctrl.page_count)
+        self.lbl_page_count.setText(f"/ {self.ctrl.page_count}")
+        self.thumbs.populate(self.ctrl)
+        self.page_spin.setValue(self._page_index + 1)
+        self._load_page()
+        self._refresh_actions()
+        self._status(f"Deleted page {page_no}.", ok=True)
+
     def _on_thumbnail_selected(self, index: int) -> None:
         if self.ctrl.is_open and 0 <= index < self.ctrl.page_count:
             self.page_spin.setValue(index + 1)  # routes through _on_page_changed
 
     def _on_span_clicked(self, span: Span | None) -> None:
         if span is None:
-            self._clear_panel()
+            if self.view.selected_signature is None:
+                self._clear_panel()
             return
 
+        self.view.select(span)
+        self._show_text_controls(True)
+        self.btn_replace_signature.setEnabled(False)
         self.lbl_font.setText(f"Font: {span.font_name}")
         self.lbl_size.setText(f"Size: {span.size:.1f} pt")
         r, g, b = (int(c * 255) for c in span.color)
@@ -427,11 +544,6 @@ class MainWindow(QMainWindow):
         self.size_spin.setValue(span.size)
         self.size_spin.blockSignals(False)
         self._update_color_swatch()
-        self.size_spin.setEnabled(True)
-        self.btn_color.setEnabled(True)
-        self.btn_bold.setEnabled(True)
-        self.btn_italic.setEnabled(True)
-        self.btn_apply.setEnabled(True)
         self.btn_delete.setEnabled(True)
         self.btn_duplicate.setEnabled(True)
         self.btn_copy.setEnabled(True)
@@ -439,6 +551,40 @@ class MainWindow(QMainWindow):
             "Edit in place keeps the layout. Drag the box (or use arrow keys; "
             "Shift = 10pt) to move this text."
         )
+
+    def _on_signature_clicked(self, sig: SignatureImage | None) -> None:
+        if sig is None:
+            if self.view.selected is None:
+                self._clear_panel()
+            return
+        self._show_text_controls(False)
+        w = sig.bbox[2] - sig.bbox[0]
+        h = sig.bbox[3] - sig.bbox[1]
+        self.lbl_font.setText(f"Image: {sig.ext.upper() or 'raster'}")
+        self.lbl_size.setText(f"Size: {w:.1f} x {h:.1f} pt")
+        self.lbl_color.setText(f"Pixels: {sig.width} x {sig.height}")
+        self.size_spin.blockSignals(True)
+        self.size_spin.setValue(w)
+        self.size_spin.blockSignals(False)
+        self.size_spin.setEnabled(True)
+        self.edit.clear()
+        self.edit.setPlaceholderText("Selected signature image")
+        self.btn_apply.setEnabled(True)
+        self.btn_delete.setEnabled(True)
+        self.btn_duplicate.setEnabled(True)
+        self.btn_copy.setEnabled(False)
+        self.btn_replace_signature.setEnabled(True)
+        self._status(
+            "Drag the signature box to move it. Change Size, then Apply edit to resize it."
+        )
+
+    def _show_text_controls(self, enabled: bool) -> None:
+        self.edit.setEnabled(enabled)
+        self.size_spin.setEnabled(enabled)
+        self.btn_color.setEnabled(enabled)
+        self.btn_bold.setEnabled(enabled)
+        self.btn_italic.setEnabled(enabled)
+        self.btn_apply.setEnabled(enabled)
 
     def _load_span_text(self, span: Span) -> None:
         """Populate the editor with the span's text, preserving bold/italic."""
@@ -489,7 +635,12 @@ class MainWindow(QMainWindow):
 
     def _on_apply(self) -> None:
         span = self.view.selected
-        if span is None or not self.ctrl.is_open:
+        sig = self.view.selected_signature
+        if not self.ctrl.is_open:
+            return
+        if sig is not None:
+            return self._on_resize_signature(sig)
+        if span is None:
             return
         runs = self._extract_runs()
         block = self.view.selected_block
@@ -507,6 +658,23 @@ class MainWindow(QMainWindow):
         self._refresh_actions()
         if result.fidelity == Fidelity.EXACT:
             self._status("Edit applied.", ok=True)
+        else:
+            self._status(f"⚠ {result.message}")
+
+    def _on_resize_signature(self, sig: SignatureImage) -> None:
+        result = self.ctrl.resize_signature(self._page_index, sig, self.size_spin.value())
+        if not result.ok:
+            self._error(result.message or "Resize signature failed.")
+            return
+        old_center = self._center(sig.bbox)
+        self._load_page()
+        resized = self._find_signature_near(old_center)
+        if resized is not None:
+            self.view.select_signature(resized)
+            self._on_signature_clicked(resized)
+        self._refresh_actions()
+        if result.fidelity == Fidelity.EXACT:
+            self._status("Signature resized.", ok=True)
         else:
             self._status(f"⚠ {result.message}")
 
@@ -531,6 +699,27 @@ class MainWindow(QMainWindow):
         else:
             self._status(f"⚠ {result.message}")
 
+    def _on_signature_moved(self, sig: SignatureImage, dx: float, dy: float) -> None:
+        if sig is None or not self.ctrl.is_open:
+            return
+        result = self.ctrl.move_signature(self._page_index, sig, dx, dy)
+        if not result.ok:
+            self._error(result.message or "Move signature failed.")
+            return
+        target = self._center(
+            (sig.bbox[0] + dx, sig.bbox[1] + dy, sig.bbox[2] + dx, sig.bbox[3] + dy)
+        )
+        self._load_page()
+        moved = self._find_signature_near(target)
+        if moved is not None:
+            self.view.select_signature(moved)
+            self._on_signature_clicked(moved)
+        self._refresh_actions()
+        if result.fidelity == Fidelity.EXACT:
+            self._status("Signature moved.", ok=True)
+        else:
+            self._status(f"⚠ {result.message}")
+
     def _find_span_near(self, text: str, origin: tuple[float, float]) -> Span | None:
         """The span with matching text whose origin is closest to ``origin``."""
         best: Span | None = None
@@ -542,6 +731,19 @@ class MainWindow(QMainWindow):
             if best_d is None or d < best_d:
                 best_d, best = d, s
         return best
+
+    def _find_signature_near(self, center: tuple[float, float]) -> SignatureImage | None:
+        best: SignatureImage | None = None
+        best_d: float | None = None
+        for sig in self.view.signatures:
+            sx, sy = self._center(sig.bbox)
+            d = (sx - center[0]) ** 2 + (sy - center[1]) ** 2
+            if best_d is None or d < best_d:
+                best_d, best = d, sig
+        return best
+
+    def _center(self, bbox) -> tuple[float, float]:
+        return ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         """PageUp/PageDown and Home/End navigate pages (when a doc is open)."""
@@ -566,7 +768,8 @@ class MainWindow(QMainWindow):
             return
         rendered = self.ctrl.render(self._page_index, _SCALE)
         blocks = self.ctrl.blocks(self._page_index)
-        self.view.set_page(rendered, blocks)
+        signatures = self.ctrl.signatures(self._page_index)
+        self.view.set_page(rendered, blocks, signatures)
         self.thumbs.set_current(self._page_index)
         self.btn_prev.setEnabled(self._page_index > 0)
         self.btn_next.setEnabled(self._page_index < self.ctrl.page_count - 1)
@@ -578,6 +781,7 @@ class MainWindow(QMainWindow):
         self.lbl_size.setText("Size: —")
         self.lbl_color.setText("Color: —")
         self.edit.clear()
+        self.edit.setPlaceholderText("Select an editable block…")
         self.edit.setEnabled(False)
         self.btn_bold.setChecked(False)
         self.btn_bold.setEnabled(False)
@@ -589,6 +793,7 @@ class MainWindow(QMainWindow):
         self.btn_copy.setEnabled(False)
         self.size_spin.setEnabled(False)
         self.btn_color.setEnabled(False)
+        self.btn_replace_signature.setEnabled(False)
 
     def _refresh_actions(self) -> None:
         is_open = self.ctrl.is_open
@@ -597,11 +802,13 @@ class MainWindow(QMainWindow):
         multipage = is_open and self.ctrl.page_count > 1
         self.btn_prev.setEnabled(multipage and self._page_index > 0)
         self.btn_next.setEnabled(multipage and self._page_index < self.ctrl.page_count - 1)
+        self.btn_delete_page.setEnabled(multipage)
         self.btn_undo.setEnabled(is_open and self.ctrl.can_undo())
         self.btn_redo.setEnabled(is_open and self.ctrl.can_redo())
         self.btn_find.setEnabled(is_open)
         self.btn_replace_all.setEnabled(is_open)
         self.btn_add_text.setEnabled(is_open)
+        self.btn_add_signature.setEnabled(is_open)
 
     def _status(self, text: str, ok: bool = False) -> None:
         color = "#1d9e75" if ok else "#8a6d00"

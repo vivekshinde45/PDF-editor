@@ -15,6 +15,13 @@ from pdfcore.editor import EditResult, Fidelity, apply_edit, apply_span_edit
 from pdfcore.editor import delete_span as _delete_span
 from pdfcore.editor import duplicate_span as _duplicate_span
 from pdfcore.editor import move_span as _move_span
+from pdfcore.images import SignatureImage, extract_signature_images
+from pdfcore.images import delete_signature as _delete_signature
+from pdfcore.images import duplicate_signature as _duplicate_signature
+from pdfcore.images import insert_signature as _insert_signature
+from pdfcore.images import move_signature as _move_signature
+from pdfcore.images import replace_signature as _replace_signature
+from pdfcore.images import resize_signature as _resize_signature
 from pdfcore.insert import insert_text_box as _insert_text_box
 from pdfcore.search import Match, count_occurrences, find_spans, replace_occurrences
 from pdfcore.surgical import surgical_replace
@@ -80,6 +87,11 @@ class Controller:
     def spans(self, index: int) -> list[Span]:
         """All editable spans on a page (the span-level edit targets)."""
         return [s for b in self.blocks(index) if b.editable for s in b.spans]
+
+    def signatures(self, index: int) -> list[SignatureImage]:
+        """Raster image blocks on a page, treated as editable signatures."""
+        assert self._doc is not None
+        return extract_signature_images(self._doc.page(index))
 
     def page_text(self, index: int) -> str:
         """The page's full text in reading order (for copy / export)."""
@@ -182,6 +194,73 @@ class Controller:
         if not result.ok:
             self._undo.pop()
         return result
+
+    def move_signature(
+        self, index: int, sig: SignatureImage, dx: float, dy: float
+    ) -> EditResult:
+        assert self._doc is not None
+        if dx == 0 and dy == 0:
+            return EditResult(ok=True, fidelity=Fidelity.EXACT)
+        self._snapshot()
+        result = _move_signature(self._doc.page(index), sig, dx, dy)
+        if not result.ok:
+            self._undo.pop()
+        return result
+
+    def delete_signature(self, index: int, sig: SignatureImage) -> EditResult:
+        assert self._doc is not None
+        self._snapshot()
+        result = _delete_signature(self._doc.page(index), sig)
+        if not result.ok:
+            self._undo.pop()
+        return result
+
+    def duplicate_signature(
+        self, index: int, sig: SignatureImage, dx: float = 8.0, dy: float = 12.0
+    ) -> EditResult:
+        assert self._doc is not None
+        self._snapshot()
+        result = _duplicate_signature(self._doc.page(index), sig, dx, dy)
+        if not result.ok:
+            self._undo.pop()
+        return result
+
+    def replace_signature(self, index: int, sig: SignatureImage, image_path: str) -> EditResult:
+        assert self._doc is not None
+        self._snapshot()
+        result = _replace_signature(self._doc.page(index), sig, image_path)
+        if not result.ok:
+            self._undo.pop()
+        return result
+
+    def resize_signature(self, index: int, sig: SignatureImage, width: float) -> EditResult:
+        assert self._doc is not None
+        current_width = sig.bbox[2] - sig.bbox[0]
+        if abs(width - current_width) < 1e-6:
+            return EditResult(ok=True, fidelity=Fidelity.EXACT)
+        self._snapshot()
+        result = _resize_signature(self._doc.page(index), sig, width)
+        if not result.ok:
+            self._undo.pop()
+        return result
+
+    def insert_signature(self, index: int, image_path: str, x: float, y: float) -> EditResult:
+        assert self._doc is not None
+        self._snapshot()
+        result = _insert_signature(self._doc.page(index), image_path, x, y)
+        if not result.ok:
+            self._undo.pop()
+        return result
+
+    def delete_page(self, index: int) -> None:
+        """Delete a page from the document. Undoable."""
+        assert self._doc is not None
+        if not 0 <= index < self.page_count:
+            raise IndexError(f"Page {index} out of range.")
+        if self.page_count <= 1:
+            raise ValueError("Cannot delete the only page in the document.")
+        self._snapshot()
+        self._doc.fitz_doc.delete_page(index)
 
     # -- find / replace -------------------------------------------------
 
